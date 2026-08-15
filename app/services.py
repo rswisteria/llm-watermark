@@ -173,7 +173,17 @@ class GenerationService:
     def _generate(
         self, prompt: str, max_new_tokens: int, seed: int | None
     ) -> Iterator[GenerationEvent]:
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+        apply_chat_template = getattr(self.tokenizer, "apply_chat_template", None)
+        if apply_chat_template is not None:
+            inputs = apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                enable_thinking=False,
+                return_tensors="pt",
+                return_dict=True,
+            )
+        else:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
         streamer = TextIteratorStreamer(
             self.tokenizer,
             skip_prompt=True,
@@ -196,7 +206,6 @@ class GenerationService:
                     temperature=0.7,
                     top_p=0.8,
                     top_k=20,
-                    enable_thinking=False,
                 )
             except Exception as exc:
                 result_holder["error"] = exc

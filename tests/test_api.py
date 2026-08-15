@@ -62,6 +62,15 @@ class FakeTokenizer:
         return "continuation:" + ",".join(str(token_id) for token_id in ids) + " "
 
 
+class ChatTemplateTokenizer(FakeTokenizer):
+    def __init__(self):
+        self.chat_template_kwargs = None
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.chat_template_kwargs = {"messages": messages, **kwargs}
+        return {"input_ids": torch.tensor([[1, 2]])}
+
+
 class FakeModel:
     def __init__(self, tokenizer, continuation_ids=None):
         self.tokenizer = tokenizer
@@ -78,6 +87,13 @@ class FakeModel:
         streamer.put(torch.tensor([self.continuation_ids[midpoint:]]))
         streamer.end()
         return torch.tensor([[1, 2, *self.continuation_ids]])
+
+
+class QwenLikeModel(FakeModel):
+    def generate(self, input_ids, streamer, **kwargs):
+        if "enable_thinking" in kwargs:
+            raise TypeError("enable_thinking is not a generate argument")
+        return super().generate(input_ids, streamer, **kwargs)
 
 
 def make_generation_service():
@@ -120,10 +136,30 @@ def test_generation_service_emits_tokens_then_done(monkeypatch):
     assert model.last_generation["temperature"] == 0.7
     assert model.last_generation["top_p"] == 0.8
     assert model.last_generation["top_k"] == 20
-    assert model.last_generation["enable_thinking"] is False
+    assert "enable_thinking" not in model.last_generation
     assert seed_calls == [7]
     assert isinstance(model.last_generation["logits_processor"], LogitsProcessorList)
     assert isinstance(model.last_generation["logits_processor"][0], WatermarkLogitsProcessor)
+
+
+def test_qwen_generation_disables_thinking_in_chat_template_not_generate():
+    tokenizer = ChatTemplateTokenizer()
+    model = QwenLikeModel(tokenizer, continuation_ids=[3, 4, 5])
+    service = GenerationService(
+        settings=ServiceSettings(hash_key=17),
+        config=WatermarkConfig(hash_key=17),
+        tokenizer=tokenizer,
+        model=model,
+    )
+
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+
+    assert events[-1].kind == "done"
+    assert tokenizer.chat_template_kwargs["messages"] == [
+        {"role": "user", "content": "prompt"}
+    ]
+    assert tokenizer.chat_template_kwargs["enable_thinking"] is False
+    assert "enable_thinking" not in model.last_generation
 
 
 def test_generation_service_done_event_marks_short_continuation_inconclusive():
@@ -319,7 +355,14 @@ def make_api_client():
     generation = FakeApiGenerationService()
     detection = FakeApiDetectionService()
     settings = ServiceSettings(model_name="test-model", hash_key=17)
-    return TestClient(create_app(settings, generation, detection)), generation, detection
+    return (
+        TestClient(
+            create_app(settings, generation, detection),
+            raise_server_exceptions=False,
+        ),
+        generation,
+        detection,
+    )
 
 
 def test_module_exports_asgi_app_with_test_only_environment():

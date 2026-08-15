@@ -32,7 +32,7 @@ def test_documentation_provides_secret_free_environment_template():
 
     assert hash_key_assignments == ["WM_HASH_KEY="]
     for required_default in (
-        "WM_MODEL_NAME=Qwen/Qwen3-1.7B",
+        "WM_MODEL_NAME=Qwen/Qwen3-4B",
         "WM_GAMMA=0.25",
         "WM_DELTA=2.0",
         "WM_Z_THRESHOLD=4.0",
@@ -228,6 +228,12 @@ def test_generation_service_rejects_third_queued_request():
 def test_settings_require_hash_key():
     with pytest.raises(ValueError, match="WM_HASH_KEY"):
         ServiceSettings.from_env({"WM_MODEL_NAME": "local-model"})
+
+
+def test_settings_default_to_qwen3_4b():
+    settings = ServiceSettings.from_env({"WM_HASH_KEY": "12345"})
+
+    assert settings.model_name == "Qwen/Qwen3-4B"
 
 
 @pytest.mark.parametrize("hash_key", [0, -1, 2**63])

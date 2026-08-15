@@ -7,7 +7,7 @@ from watermark import MAX_HASH_KEY, WatermarkConfig
 
 @dataclass(frozen=True)
 class ServiceSettings:
-    model_name: str = "Qwen/Qwen3-1.7B"
+    model_name: str = "Qwen/Qwen3-4B"
     hash_key: int = 0
     gamma: float = 0.25
     delta: float = 2.0

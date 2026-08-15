@@ -15,7 +15,7 @@ python -m pip install -r requirements.txt
 
 Copy `.env.example` to `.env`, edit the required `WM_HASH_KEY` (and any other values), then export the file before starting the service. The application reads environment variables directly; it does not load `.env` automatically. `WM_HASH_KEY` must be a private positive integer. Do not put the key in source control, `.env.example`, API requests, health responses, or logs.
 
-The default model is `Qwen/Qwen3-1.7B`. To use a downloaded local model instead, set `WM_MODEL_NAME=./models/Qwen3-1.7B`. The tokenizer and model must match between generation and detection. The first normal model load requires network access; later runs can use the downloaded local directory.
+The default model is `Qwen/Qwen3-4B`, which is the larger Qwen3 model selected for this PC's 15 GiB CPU-only environment. To use the downloaded local model, set `WM_MODEL_NAME=./models/Qwen3-4B`. The tokenizer and model must match between generation and detection. The first normal model load requires network access; later runs can use the downloaded local directory. Qwen3-1.7B remains selectable by setting `WM_MODEL_NAME=./models/Qwen3-1.7B`.
 
 ## Start the web service
 

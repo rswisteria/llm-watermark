@@ -1,0 +1,18 @@
+# Python environments and generated caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Downloaded model weights and Hugging Face metadata
+models/
+.cache/
+.huggingface/
+
+# Local copy of the research paper
+2301.10226v4.pdf
+
+# Agent/session metadata
+.superpowers/
+.agents/
+.codex/

@@ -19,7 +19,6 @@ from watermark import (
     DetectionStep,
     IncrementalScorer,
     WatermarkConfig,
-    WatermarkDetector,
     WatermarkLogitsProcessor,
 )
 
@@ -65,11 +64,6 @@ def _inconclusive_response(
     )
 
 
-def _is_short_detection_error(exc: ValueError) -> bool:
-    message = str(exc)
-    return "at least two" in message or "scorable" in message
-
-
 def _detection_response(
     result, config: WatermarkConfig, tokens: list[TokenDetail] | None = None
 ) -> DetectionResponse:
@@ -110,19 +104,14 @@ def _classify_token_ids(
     tokenizer=None,
     include_tokens: bool = False,
 ) -> DetectionResponse:
-    detector = WatermarkDetector(vocab_size, config)
+    scorer = IncrementalScorer(vocab_size, config)
+    steps = [scorer.push(token_id) for token_id in token_ids]
     tokens = None
     if include_tokens and tokenizer is not None:
-        scorer = IncrementalScorer(vocab_size, config)
-        steps = [scorer.push(token_id) for token_id in token_ids]
         tokens = _steps_to_tokens(steps, token_pieces(tokenizer, token_ids))
-    try:
-        result = detector.detect_token_ids(token_ids)
-    except ValueError as exc:
-        if _is_short_detection_error(exc):
-            return _inconclusive_response(config, max(0, len(token_ids) - 1), tokens)
-        raise
-    return _detection_response(result, config, tokens)
+    if scorer.scored == 0:
+        return _inconclusive_response(config, max(0, len(token_ids) - 1), tokens)
+    return _detection_response(scorer.result(), config, tokens)
 
 
 class DetectionService:

@@ -367,8 +367,13 @@ class FakeApiDetectionService:
         self.calls.append((text, include_tokens))
         if self.next_error:
             raise self.next_error
-        from app.schemas import DetectionResponse
+        from app.schemas import DetectionResponse, TokenDetail
 
+        tokens = None
+        if include_tokens:
+            tokens = [
+                TokenDetail(index=0, id=1, text="a", green=None, t=0, green_count=0, z=0.0)
+            ]
         return DetectionResponse(
             verdict="inconclusive" if len(text) < 10 else "not_watermarked",
             num_tokens=len(text),
@@ -376,6 +381,7 @@ class FakeApiDetectionService:
             z_score=0.0,
             p_value=1.0,
             threshold=4.0,
+            tokens=tokens,
         )
 
 
@@ -500,6 +506,22 @@ def test_detect_endpoint_forwards_include_tokens():
         ("十分に長いテキストです", False),
         ("十分に長いテキストです", True),
     ]
+
+
+def test_detect_response_omits_tokens_key_when_not_requested():
+    client, _, _ = make_api_client()
+    response = client.post("/api/detect", json={"text": "十分に長いテキストです"})
+    assert "tokens" not in response.json()
+
+
+def test_detect_response_includes_token_details_when_requested():
+    client, _, _ = make_api_client()
+    response = client.post(
+        "/api/detect", json={"text": "十分に長いテキストです", "include_tokens": True}
+    )
+    tokens = response.json()["tokens"]
+    assert tokens[0]["id"] == 1
+    assert tokens[0]["green"] is None
 
 
 def test_generate_stream_contains_token_and_done_events():

@@ -57,6 +57,16 @@
     .stats dd { margin: 0; font-variant-numeric: tabular-nums; }
     [hidden] { display: none !important; }
     @media (max-width: 520px) { main { width: min(100% - 1rem, 900px); padding: 1.25rem 0; } .tabs button { flex: 1; } }
+    .view-toggle { display: flex; gap: .4rem; margin: 1.25rem 0 .5rem; }
+    .view-toggle button { padding: .35rem .7rem; border: 1px solid var(--line); background: #e9eef7; font-weight: 600; }
+    .view-toggle button[aria-pressed="true"] { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .tokens { min-height: 7rem; padding: 1rem; border-radius: .55rem; background: #fff; border: 1px solid var(--line); line-height: 2; white-space: pre-wrap; word-break: break-all; }
+    .tok { display: inline; padding: .1rem .15rem; margin: 0 1px; border-radius: .25rem; border-bottom: 2px solid transparent; }
+    .tok.green { background: #d3f5df; border-bottom-color: #087443; }
+    .tok.red { background: #ffd9d4; border-bottom-color: #b42318; }
+    .tok.unscored { background: #e6e9ef; border-bottom-color: #8b95a7; }
+    .legend { margin: .4rem 0 0; color: var(--muted); font-size: .85rem; }
+    .legend .tok { padding: 0 .4rem; }
   </style>
 </head>
 <body>
@@ -75,7 +85,13 @@
       <label for="prompt">プロンプト</label>
       <textarea id="prompt" maxlength="2000" placeholder="生成したい文章のテーマを入力してください"></textarea>
       <button id="generate-button" class="primary" type="button">透かし付きで生成</button>
-      <pre id="generated-text" aria-live="polite"></pre>
+      <div class="view-toggle" role="group" aria-label="表示形式">
+        <button type="button" data-view="chips" data-target="generate" aria-pressed="true">トークン表示</button>
+        <button type="button" data-view="text" data-target="generate" aria-pressed="false">テキスト表示</button>
+      </div>
+      <div id="generated-tokens" class="tokens" aria-live="polite"></div>
+      <p class="legend"><span class="tok green">Green</span> <span class="tok red">Red</span> <span class="tok unscored">未採点（先頭）</span> — ホバーで前トークンID・T・累積 z を表示</p>
+      <pre id="generated-text" aria-live="polite" hidden></pre>
       <output id="generation-result" class="result" aria-live="polite" hidden></output>
     </section>
 
@@ -84,6 +100,12 @@
       <label for="detect-text">判定するテキスト</label>
       <textarea id="detect-text" maxlength="10000" placeholder="本サービスで生成されたテキストを貼り付けてください"></textarea>
       <button id="detect-button" class="primary" type="button">判定する</button>
+      <div class="view-toggle" role="group" aria-label="表示形式">
+        <button type="button" data-view="chips" data-target="detect" aria-pressed="true">トークン表示</button>
+        <button type="button" data-view="text" data-target="detect" aria-pressed="false">テキスト表示</button>
+      </div>
+      <div id="detect-tokens" class="tokens" aria-live="polite" hidden></div>
+      <pre id="detect-text-view" hidden></pre>
       <output id="detection-result" class="result" aria-live="polite" hidden></output>
     </section>
   </main>
@@ -95,8 +117,11 @@
       const generateButton = document.getElementById('generate-button');
       const detectButton = document.getElementById('detect-button');
       const generatedText = document.getElementById('generated-text');
+      const generatedTokens = document.getElementById('generated-tokens');
       const generationResult = document.getElementById('generation-result');
       const detectionResult = document.getElementById('detection-result');
+      const detectTokens = document.getElementById('detect-tokens');
+      const detectTextView = document.getElementById('detect-text-view');
 
       tabs.forEach((tab) => tab.addEventListener('click', () => {
         const selected = tab.dataset.tab;
@@ -122,6 +147,45 @@
       function verdictLabel(verdict) {
         return { watermarked: '透かしあり', not_watermarked: '透かしなし', inconclusive: '判定不能' }[verdict] || '不明';
       }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+
+      function tokenChipMarkup(tok) {
+        const cls = tok.green === null ? 'unscored' : (tok.green ? 'green' : 'red');
+        const label = tok.green === null ? '未採点（先頭トークン）' : (tok.green ? 'Green' : 'Red');
+        const title = (tok.green === null ? '' : ('前トークン ' + tok.prev_id_label + ' → ')) +
+          'ID ' + tok.id + ' / ' + label + ' / T=' + tok.t + ' / g=' + tok.green_count + ' / z=' + Number(tok.z).toFixed(3);
+        const text = tok.text === '' ? '·' : tok.text;
+        return '<span class="tok ' + cls + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
+      }
+
+      function renderTokenChips(container, tokens) {
+        // 前トークン ID はサーバから来ないので直前チップの id を引き継ぐ
+        let prevId = container.dataset.lastId ? Number(container.dataset.lastId) : null;
+        container.insertAdjacentHTML('beforeend', tokens.map((tok) => {
+          const withPrev = Object.assign({ prev_id_label: prevId === null ? '-' : String(prevId) }, tok);
+          prevId = tok.id;
+          return tokenChipMarkup(withPrev);
+        }).join(''));
+        if (tokens.length) container.dataset.lastId = String(prevId);
+      }
+
+      function resetTokenView(container) {
+        container.innerHTML = '';
+        delete container.dataset.lastId;
+      }
+
+      document.querySelectorAll('.view-toggle button').forEach((button) => button.addEventListener('click', () => {
+        const target = button.dataset.target;
+        const view = button.dataset.view;
+        document.querySelectorAll('.view-toggle button[data-target="' + target + '"]').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+        const chips = document.getElementById(target === 'generate' ? 'generated-tokens' : 'detect-tokens');
+        const text = document.getElementById(target === 'generate' ? 'generated-text' : 'detect-text-view');
+        chips.hidden = view !== 'chips';
+        text.hidden = view !== 'text';
+      }));
 
       async function readSse(response, onEvent) {
         if (!response.ok || !response.body) throw new Error('生成リクエストに失敗しました。');
@@ -156,12 +220,21 @@
         if (!prompt) return;
         generateButton.disabled = true;
         generatedText.textContent = '';
+        resetTokenView(generatedTokens);
         generationResult.hidden = true;
         try {
           const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
           await readSse(response, (event, payload) => {
-            if (event === 'token') generatedText.textContent += payload.text || '';
-            if (event === 'done') showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+            if (event === 'token') {
+              generatedText.textContent += payload.text || '';
+              renderTokenChips(generatedTokens, payload.tokens || []);
+            }
+            if (event === 'done') {
+              generatedText.textContent = payload.full_text;
+              resetTokenView(generatedTokens);
+              renderTokenChips(generatedTokens, payload.detection.tokens || []);
+              showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+            }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });
         } catch (error) { generationResult.className = 'result error'; generationResult.textContent = error.message; generationResult.hidden = false; }
@@ -174,9 +247,13 @@
         detectButton.disabled = true;
         detectionResult.hidden = true;
         try {
-          const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+          const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, include_tokens: true }) });
           if (!response.ok) throw new Error('判定リクエストに失敗しました。');
           const detection = await response.json();
+          resetTokenView(detectTokens);
+          renderTokenChips(detectTokens, detection.tokens || []);
+          detectTextView.textContent = (detection.tokens || []).map((t) => t.text).join('');
+          detectTokens.hidden = false;
           const message = detection.verdict === 'inconclusive' ? 'テキストが短すぎて判定できません。' : verdictLabel(detection.verdict);
           showResult(detectionResult, message, detection, detection.verdict === 'watermarked' ? 'success' : '');
         } catch (error) { detectionResult.className = 'result error'; detectionResult.textContent = error.message; detectionResult.hidden = false; }

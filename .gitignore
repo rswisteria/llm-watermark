@@ -16,3 +16,6 @@ models/
 .superpowers/
 .agents/
 .codex/
+
+# Local secrets
+.env

@@ -102,7 +102,7 @@
       <p class="legend"><span class="tok green">Green</span> <span class="tok red">Red</span> <span class="tok unscored">未採点（先頭）</span> — ホバーで前トークンID・T・累積 z を表示</p>
       <pre id="generated-text" aria-live="polite" hidden></pre>
       <div class="viz">
-        <svg id="generate-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="z 値の推移"></svg>
+        <svg id="generate-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
         <div id="generate-formula" class="formula"></div>
       </div>
       <output id="generation-result" class="result" aria-live="polite" hidden></output>
@@ -120,7 +120,7 @@
       <div id="detect-tokens" class="tokens" aria-live="polite" hidden></div>
       <pre id="detect-text-view" hidden></pre>
       <div class="viz">
-        <svg id="detect-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="z 値の推移"></svg>
+        <svg id="detect-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
         <div id="detect-formula" class="formula"></div>
       </div>
       <output id="detection-result" class="result" aria-live="polite" hidden></output>
@@ -173,6 +173,13 @@
 
       function renderFormula(el, detection, gamma) {
         const T = detection.num_tokens, g = detection.green_count;
+        if (T === 0) {
+          el.innerHTML =
+            '<div>z = (g − γ·T) / √(γ(1−γ)·T)</div>' +
+            '<div class="muted">g = Green トークン数, T = 採点トークン数（先頭を除く）, γ = Green 比率</div>' +
+            '<div>T = 0 のため z と p は算出できません（採点対象トークンがありません）。判定: inconclusive</div>';
+          return;
+        }
         const expected = gamma * T;
         const denom = Math.sqrt(gamma * (1 - gamma) * T);
         el.innerHTML =
@@ -303,7 +310,7 @@
               generatedText.textContent = payload.full_text;
               resetTokenView(generatedTokens);
               renderTokenChips(generatedTokens, payload.detection.tokens || []);
-              renderZChart(generateChart, payload.detection.tokens || [], settings.z_threshold);
+              renderZChart(generateChart, payload.detection.tokens || [], payload.detection.threshold);
               renderFormula(generateFormula, payload.detection, settings.gamma);
               showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
             }
@@ -320,6 +327,8 @@
         detectionResult.hidden = true;
         resetTokenView(detectTokens);
         detectTextView.textContent = '';
+        renderZChart(detectChart, [], settings.z_threshold);
+        detectFormula.innerHTML = '';
         try {
           const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, include_tokens: true }) });
           if (!response.ok) throw new Error('判定リクエストに失敗しました。');
@@ -328,7 +337,7 @@
           renderTokenChips(detectTokens, detection.tokens || []);
           detectTextView.textContent = (detection.tokens || []).map((t) => t.text).join('');
           applyView('detect');
-          renderZChart(detectChart, detection.tokens || [], settings.z_threshold);
+          renderZChart(detectChart, detection.tokens || [], detection.threshold);
           renderFormula(detectFormula, detection, settings.gamma);
           const message = detection.verdict === 'inconclusive' ? 'テキストが短すぎて判定できません。' : verdictLabel(detection.verdict);
           showResult(detectionResult, message, detection, detection.verdict === 'watermarked' ? 'success' : '');

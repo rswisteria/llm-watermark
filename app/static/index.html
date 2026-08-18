@@ -562,7 +562,8 @@
         resetTokenView(row.tokensEl);
         renderTokenChips(row.tokensEl, det.tokens || []);
         renderZChart(row.chartEl, det.tokens || [], det.threshold);
-        showResult(row.resultEl, LANE_LABELS[colIndex === 2 ? 0 : colIndex] + ' で判定: ' + verdictLabel(det.verdict), det, det.verdict === 'watermarked' ? 'success' : '');
+        const keyLabel = colIndex === 2 ? '既定鍵' : LANE_LABELS[colIndex];
+        showResult(row.resultEl, keyLabel + ' で判定: ' + verdictLabel(det.verdict), det, det.verdict === 'watermarked' ? 'success' : '');
         renderMatrix();
       }
 
@@ -630,7 +631,8 @@
         resetTokenView(tamperTokens);
         renderTokenChips(tamperTokens, det.tokens || []);
         renderZChart(tamperChart, det.tokens || [], det.threshold);
-        renderFormula(tamperFormula, det, settings.gamma);
+        const gamma = tamper.watermark && tamper.watermark.gamma !== undefined ? tamper.watermark.gamma : settings.gamma;
+        renderFormula(tamperFormula, det, gamma);
         const z0 = tamper.originalDetection ? Number(tamper.originalDetection.z_score).toFixed(3) : '-';
         document.getElementById('tamper-z0').textContent = z0;
         document.getElementById('tamper-z1').textContent = Number(det.z_score).toFixed(3);
@@ -644,7 +646,7 @@
 
       async function runTamperDetect() {
         const text = tamperText.value.trim();
-        if (!text) { tamperStats.hidden = true; resetTokenView(tamperTokens); renderZChart(tamperChart, [], settings.z_threshold); tamperFormula.innerHTML = ''; return; }
+        if (!text) { tamper.seq++; tamperError.textContent = ''; tamperStats.hidden = true; resetTokenView(tamperTokens); renderZChart(tamperChart, [], settings.z_threshold); tamperFormula.innerHTML = ''; return; }
         const seq = ++tamper.seq;
         try {
           const det = await detectWith(text, tamper.watermark);

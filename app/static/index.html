@@ -110,6 +110,8 @@
     .toklist .tk small { display: block; color: var(--muted); font-size: .7rem; text-align: center; }
     .toklist .tk.only-a { background: #ffd9d4; }
     .toklist .tk.only-b { background: #d3f5df; }
+    .preset-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
+    .preset-row select { padding: .3rem .4rem; border: 1px solid #aeb9c9; border-radius: .4rem; font: inherit; }
   </style>
 </head>
 <body>
@@ -128,6 +130,10 @@
 
     <section id="generate-panel" class="panel" data-panel="generate">
       <h2>透かし付きで生成</h2>
+      <div class="preset-row">
+        <label>プリセット <select class="preset-select" data-target="prompt"><option value="">（選択）</option></select></label>
+        <span class="legend preset-hint"></span>
+      </div>
       <label for="prompt">プロンプト</label>
       <textarea id="prompt" maxlength="2000" placeholder="生成したい文章のテーマを入力してください"></textarea>
       <button id="generate-button" class="primary" type="button">透かし付きで生成</button>
@@ -172,6 +178,10 @@
     <section id="compare-panel" class="panel" data-panel="compare" hidden>
       <h2>鍵を変えて比較する</h2>
       <p class="intro">同じプロンプト・seed で「鍵A / 鍵B / 透かしなし」を順に生成し、各文章を各鍵で判定します。別の鍵で見ると Green 比率が γ に戻り、透かしは検出できません。</p>
+      <div class="preset-row">
+        <label>プリセット <select class="preset-select" data-target="compare-prompt"><option value="">（選択）</option></select></label>
+        <span class="legend preset-hint"></span>
+      </div>
       <label for="compare-prompt">プロンプト</label>
       <textarea id="compare-prompt" maxlength="2000" placeholder="例: 日本の四季について、それぞれの特徴を段落ごとに説明してください。"></textarea>
       <div class="compare-controls">
@@ -849,6 +859,33 @@
       function scheduleTokenize() { clearTimeout(tokenizeState.timer); tokenizeState.timer = setTimeout(runTokenize, 300); }
       tokenizeA.addEventListener('input', scheduleTokenize);
       tokenizeB.addEventListener('input', scheduleTokenize);
+
+      const PRESETS = [
+        { group: '低エントロピー（z が伸びにくい）', hint: '定型的な出力では次のトークンがほぼ決まっていて Green を選ぶ余地がなく、z が伸びにくい', items: [
+          '1 から 100 まで数字を改行区切りで書いてください。',
+          'Python で FizzBuzz を書いてください。',
+          '五十音（あいうえお…）を順に、間に空白を入れて書いてください。',
+        ] },
+        { group: '高エントロピー（z が伸びやすい）', hint: '自由度が高い文章では Green を選びやすく、z が伸びやすい', items: [
+          '架空の街を舞台にした短い物語を 400 字程度で書いてください。',
+          '日本の四季それぞれの魅力を段落ごとに説明してください。',
+          '旅行の計画の立て方について、初心者向けにアドバイスしてください。',
+        ] },
+      ];
+      document.querySelectorAll('.preset-select').forEach((select) => {
+        PRESETS.forEach((g, gi) => {
+          const og = document.createElement('optgroup'); og.label = g.group;
+          g.items.forEach((p, pi) => { const o = document.createElement('option'); o.value = gi + ':' + pi; o.textContent = p; og.appendChild(o); });
+          select.appendChild(og);
+        });
+        select.addEventListener('change', () => {
+          const [gi, pi] = select.value.split(':').map(Number);
+          const hint = select.parentElement.parentElement.querySelector('.preset-hint');
+          if (Number.isNaN(gi)) { hint.textContent = ''; return; }
+          document.getElementById(select.dataset.target).value = PRESETS[gi].items[pi];
+          hint.textContent = PRESETS[gi].hint;
+        });
+      });
     })();
   </script>
 </body>

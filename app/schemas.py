@@ -3,10 +3,23 @@ from typing import Literal
 from pydantic import BaseModel, field_validator
 
 
+class WatermarkOverride(BaseModel):
+    """Optional per-request watermark parameters for the learning UI.
+
+    Missing values fall back to the server settings; validation happens in
+    WatermarkConfig so the rules stay in one place.
+    """
+
+    hash_key: int | None = None
+    gamma: float | None = None
+    delta: float | None = None
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     max_new_tokens: int | None = None
     seed: int | None = None
+    watermark: WatermarkOverride | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -35,6 +48,7 @@ class GenerateRequest(BaseModel):
 class DetectRequest(BaseModel):
     text: str
     include_tokens: bool = False
+    watermark: WatermarkOverride | None = None
 
     @field_validator("text")
     @classmethod

@@ -715,3 +715,42 @@ def test_lifespan_starts_injected_service_once():
         FakeApiDetectionService()
     )):
         assert fake_service.start_loading_calls == 1
+
+
+def test_watermark_config_applies_only_provided_overrides():
+    from app.schemas import WatermarkOverride
+
+    settings = ServiceSettings.from_env(
+        {"WM_HASH_KEY": "12345", "WM_GAMMA": "0.3", "WM_DELTA": "1.5", "WM_Z_THRESHOLD": "3.5"}
+    )
+    base = settings.watermark_config()
+    assert (base.hash_key, base.gamma, base.delta, base.z_threshold) == (12345, 0.3, 1.5, 3.5)
+
+    partial = settings.watermark_config(WatermarkOverride(hash_key=99, delta=0.0))
+    assert (partial.hash_key, partial.gamma, partial.delta, partial.z_threshold) == (99, 0.3, 0.0, 3.5)
+
+    assert settings.watermark_config(WatermarkOverride()) == base
+    assert settings.watermark_config(None) == base
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"hash_key": 0}, {"hash_key": -1}, {"gamma": 1.0}, {"gamma": 0.0}, {"delta": -0.5}],
+)
+def test_watermark_config_rejects_invalid_override(override):
+    from app.schemas import WatermarkOverride
+
+    settings = ServiceSettings.from_env({"WM_HASH_KEY": "12345"})
+    with pytest.raises(ValueError):
+        settings.watermark_config(WatermarkOverride(**override))
+
+
+def test_requests_accept_optional_watermark_override():
+    from app.schemas import DetectRequest, GenerateRequest
+
+    assert GenerateRequest(prompt="x").watermark is None
+    assert DetectRequest(text="x").watermark is None
+    request = GenerateRequest(prompt="x", watermark={"hash_key": 5, "gamma": 0.5})
+    assert request.watermark.hash_key == 5
+    assert request.watermark.gamma == 0.5
+    assert request.watermark.delta is None

@@ -99,44 +99,102 @@ class DetectionResult:
     is_watermarked: bool
 
 
-class WatermarkDetector:
-    def __init__(self, vocab_size: int, config: WatermarkConfig, tokenizer=None) -> None:
+@dataclass(frozen=True)
+class DetectionStep:
+    index: int
+    token_id: int
+    previous_id: Optional[int]
+    is_green: Optional[bool]
+    scored: int
+    green_count: int
+    z_score: float
+
+
+class IncrementalScorer:
+    """Scores tokens one at a time with the same bigram rule as WatermarkDetector."""
+
+    def __init__(self, vocab_size: int, config: WatermarkConfig) -> None:
         self.config = config
-        self.tokenizer = tokenizer
         self.generator = GreenListGenerator(vocab_size, config)
+        self._previous_id: Optional[int] = None
+        self._index = 0
+        self._scored = 0
+        self._green_count = 0
+        self._seen_bigrams: set = set()
 
-    def detect_token_ids(self, token_ids: Sequence[int]) -> DetectionResult:
-        if len(token_ids) < 2:
-            raise ValueError("text must contain at least two tokens")
+    @property
+    def scored(self) -> int:
+        return self._scored
 
-        green_count = 0
-        scored = 0
-        seen_bigrams = set()
-        for index in range(1, len(token_ids)):
-            bigram = (int(token_ids[index - 1]), int(token_ids[index]))
-            if self.config.ignore_repeated_bigrams and bigram in seen_bigrams:
-                continue
-            seen_bigrams.add(bigram)
-            scored += 1
-            green_ids = self.generator.green_list(bigram[0])
-            green_count += int(bigram[1] in green_ids.tolist())
+    @property
+    def green_count(self) -> int:
+        return self._green_count
 
-        if scored == 0:
-            raise ValueError("text must contain at least one scorable token")
-
-        expected = self.config.gamma * scored
-        z_score = (green_count - expected) / sqrt(
-            scored * self.config.gamma * (1 - self.config.gamma)
+    def _z_score(self) -> float:
+        if self._scored == 0:
+            return 0.0
+        expected = self.config.gamma * self._scored
+        return (self._green_count - expected) / sqrt(
+            self._scored * self.config.gamma * (1 - self.config.gamma)
         )
+
+    def push(self, token_id: int) -> DetectionStep:
+        token_id = int(token_id)
+        is_green: Optional[bool] = None
+        if self._previous_id is not None:
+            bigram = (self._previous_id, token_id)
+            if not (self.config.ignore_repeated_bigrams and bigram in self._seen_bigrams):
+                self._seen_bigrams.add(bigram)
+                green_ids = self.generator.green_list(bigram[0])
+                is_green = bool(token_id in green_ids.tolist())
+                self._scored += 1
+                self._green_count += int(is_green)
+        step = DetectionStep(
+            index=self._index,
+            token_id=token_id,
+            previous_id=self._previous_id,
+            is_green=is_green,
+            scored=self._scored,
+            green_count=self._green_count,
+            z_score=self._z_score(),
+        )
+        self._index += 1
+        self._previous_id = token_id
+        return step
+
+    def result(self) -> DetectionResult:
+        if self._scored == 0:
+            raise ValueError("text must contain at least one scorable token")
+        z_score = self._z_score()
         p_value = 0.5 * erfc(z_score / sqrt(2.0))
         return DetectionResult(
-            token_count=scored,
-            green_count=green_count,
-            green_fraction=green_count / scored,
+            token_count=self._scored,
+            green_count=self._green_count,
+            green_fraction=self._green_count / self._scored,
             z_score=z_score,
             p_value=p_value,
             is_watermarked=z_score > self.config.z_threshold,
         )
+
+
+class WatermarkDetector:
+    def __init__(self, vocab_size: int, config: WatermarkConfig, tokenizer=None) -> None:
+        self.config = config
+        self.tokenizer = tokenizer
+        self.vocab_size = vocab_size
+
+    def detect_token_ids_detailed(
+        self, token_ids: Sequence[int]
+    ) -> tuple[DetectionResult, list[DetectionStep]]:
+        if len(token_ids) < 2:
+            raise ValueError("text must contain at least two tokens")
+        scorer = IncrementalScorer(self.vocab_size, self.config)
+        steps = [scorer.push(token_id) for token_id in token_ids]
+        return scorer.result(), steps
+
+    def detect_token_ids(self, token_ids: Sequence[int]) -> DetectionResult:
+        result, _ = self.detect_token_ids_detailed(token_ids)
+        return result
 
     def detect(self, text: str) -> DetectionResult:
         if self.tokenizer is None:

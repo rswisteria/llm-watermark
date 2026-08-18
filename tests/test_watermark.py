@@ -6,7 +6,9 @@ import torch
 
 from watermark import (
     DetectionResult,
+    DetectionStep,
     GreenListGenerator,
+    IncrementalScorer,
     WatermarkConfig,
     WatermarkDetector,
     WatermarkLogitsProcessor,
@@ -239,3 +241,65 @@ def test_detector_only_main_path_does_not_load_a_model(monkeypatch, capsys):
     demo.main()
 
     assert "T=1" in capsys.readouterr().out
+
+
+def test_incremental_scorer_matches_batch_detector():
+    config = WatermarkConfig(gamma=0.25, hash_key=17)
+    generator = GreenListGenerator(vocab_size=64, config=config)
+    token_ids = [7]
+    for _ in range(30):
+        token_ids.append(int(generator.green_list(token_ids[-1])[0]))
+    token_ids[10] = 3  # 途中に赤も混ぜる
+
+    detector = WatermarkDetector(vocab_size=64, config=config)
+    batch = detector.detect_token_ids(token_ids)
+    result, steps = detector.detect_token_ids_detailed(token_ids)
+
+    assert result == batch
+    assert len(steps) == len(token_ids)
+    assert steps[0] == DetectionStep(
+        index=0, token_id=7, previous_id=None, is_green=None,
+        scored=0, green_count=0, z_score=0.0,
+    )
+    assert steps[1].previous_id == 7
+    assert steps[1].is_green is True
+    assert steps[1].scored == 1
+    assert steps[-1].scored == batch.token_count
+    assert steps[-1].green_count == batch.green_count
+    assert steps[-1].z_score == pytest.approx(batch.z_score)
+    assert [step.index for step in steps] == list(range(len(token_ids)))
+
+
+def test_incremental_scorer_reports_z_after_each_token():
+    config = WatermarkConfig(gamma=0.5, hash_key=17)
+    scorer = IncrementalScorer(vocab_size=64, config=config)
+    generator = GreenListGenerator(vocab_size=64, config=config)
+
+    first = scorer.push(7)
+    assert first.is_green is None and first.z_score == 0.0
+    green_id = int(generator.green_list(7)[0])
+    second = scorer.push(green_id)
+    assert second.is_green is True
+    assert second.scored == 1 and second.green_count == 1
+    assert second.z_score == pytest.approx((1 - 0.5 * 1) / math.sqrt(1 * 0.5 * 0.5))
+    with_result = scorer.result()
+    assert with_result.token_count == 1 and with_result.green_count == 1
+
+
+def test_incremental_scorer_result_requires_scored_token():
+    scorer = IncrementalScorer(vocab_size=64, config=WatermarkConfig(hash_key=17))
+    scorer.push(7)
+    with pytest.raises(ValueError, match="scorable"):
+        scorer.result()
+
+
+def test_incremental_scorer_skips_repeated_bigrams_when_configured():
+    config = WatermarkConfig(gamma=0.5, hash_key=17, ignore_repeated_bigrams=True)
+    scorer = IncrementalScorer(vocab_size=64, config=config)
+    scorer.push(1)
+    a = scorer.push(2)
+    scorer.push(1)
+    b = scorer.push(2)
+    assert a.is_green is not None
+    assert b.is_green is None
+    assert b.scored == a.scored + 1  # (2,1) は採点され (1,2) の再出現は採点されない

@@ -70,7 +70,14 @@ def create_app(
 
     @app.post("/api/detect", response_model=DetectionResponse)
     async def detect(payload: DetectRequest):
-        return detection.classify(payload.text)
+        result = detection.classify(payload.text, include_tokens=payload.include_tokens)
+        body = result.model_dump(mode="json")
+        if result.tokens is None:
+            # Drop the top-level key only; response_model_exclude_none would also
+            # strip legitimate nested nulls such as TokenDetail.green for the
+            # first token (no previous token to form a bigram with).
+            body.pop("tokens", None)
+        return JSONResponse(content=body)
 
     @app.post("/api/generate")
     def generate(payload: GenerateRequest):

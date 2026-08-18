@@ -12,7 +12,7 @@ class ServiceSettings:
     gamma: float = 0.25
     delta: float = 2.0
     z_threshold: float = 4.0
-    max_new_tokens: int = 400
+    max_new_tokens: int = 4096
 
     def __post_init__(self) -> None:
         if self.max_new_tokens <= 0:
@@ -55,6 +55,7 @@ class ServiceSettings:
             z_threshold=self.z_threshold,
         )
 
-    def max_tokens(self, requested: int) -> int:
-        upper_bound = min(self.max_new_tokens, 400)
-        return max(1, min(requested, upper_bound))
+    def max_tokens(self, requested: int | None) -> int:
+        if requested is None:
+            return self.max_new_tokens
+        return max(1, min(requested, self.max_new_tokens))

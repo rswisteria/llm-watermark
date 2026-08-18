@@ -57,6 +57,25 @@
     .stats dd { margin: 0; font-variant-numeric: tabular-nums; }
     [hidden] { display: none !important; }
     @media (max-width: 520px) { main { width: min(100% - 1rem, 900px); padding: 1.25rem 0; } .tabs button { flex: 1; } }
+    .view-toggle { display: flex; gap: .4rem; margin: 1.25rem 0 .5rem; }
+    .view-toggle button { padding: .35rem .7rem; border: 1px solid var(--line); background: #e9eef7; font-weight: 600; }
+    .view-toggle button[aria-pressed="true"] { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .tokens { min-height: 7rem; padding: 1rem; border-radius: .55rem; background: #fff; border: 1px solid var(--line); line-height: 2; white-space: pre-wrap; word-break: break-all; }
+    .tok { display: inline; padding: .1rem .15rem; margin: 0 1px; border-radius: .25rem; border-bottom: 2px solid transparent; }
+    .tok.green { background: #d3f5df; border-bottom-color: #087443; }
+    .tok.red { background: #ffd9d4; border-bottom-color: #b42318; }
+    .tok.unscored { background: #e6e9ef; border-bottom-color: #8b95a7; }
+    .legend { margin: .4rem 0 0; color: var(--muted); font-size: .85rem; }
+    .legend .tok { padding: 0 .4rem; }
+    .viz { margin-top: 1.25rem; display: grid; gap: 1rem; }
+    .chart { width: 100%; height: 220px; border: 1px solid var(--line); border-radius: .55rem; background: #fff; }
+    .chart text { font-size: 11px; fill: var(--muted); }
+    .chart .axis { stroke: #aeb9c9; stroke-width: 1; }
+    .chart .z-line { fill: none; stroke: var(--brand); stroke-width: 2; }
+    .chart .threshold { stroke: var(--danger); stroke-dasharray: 4 3; }
+    .chart .inconclusive { fill: #f2f4f8; }
+    .formula { padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95rem; }
+    .formula .muted { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -75,7 +94,17 @@
       <label for="prompt">プロンプト</label>
       <textarea id="prompt" maxlength="2000" placeholder="生成したい文章のテーマを入力してください"></textarea>
       <button id="generate-button" class="primary" type="button">透かし付きで生成</button>
-      <pre id="generated-text" aria-live="polite"></pre>
+      <div class="view-toggle" role="group" aria-label="表示形式">
+        <button type="button" data-view="chips" data-target="generate" aria-pressed="true">トークン表示</button>
+        <button type="button" data-view="text" data-target="generate" aria-pressed="false">テキスト表示</button>
+      </div>
+      <div id="generated-tokens" class="tokens" aria-live="polite"></div>
+      <p class="legend"><span class="tok green">Green</span> <span class="tok red">Red</span> <span class="tok unscored">未採点（先頭）</span> — ホバーで前トークンID・T・累積 z を表示</p>
+      <pre id="generated-text" aria-live="polite" hidden></pre>
+      <div class="viz">
+        <svg id="generate-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+        <div id="generate-formula" class="formula"></div>
+      </div>
       <output id="generation-result" class="result" aria-live="polite" hidden></output>
     </section>
 
@@ -84,6 +113,16 @@
       <label for="detect-text">判定するテキスト</label>
       <textarea id="detect-text" maxlength="10000" placeholder="本サービスで生成されたテキストを貼り付けてください"></textarea>
       <button id="detect-button" class="primary" type="button">判定する</button>
+      <div class="view-toggle" role="group" aria-label="表示形式">
+        <button type="button" data-view="chips" data-target="detect" aria-pressed="true">トークン表示</button>
+        <button type="button" data-view="text" data-target="detect" aria-pressed="false">テキスト表示</button>
+      </div>
+      <div id="detect-tokens" class="tokens" aria-live="polite" hidden></div>
+      <pre id="detect-text-view" hidden></pre>
+      <div class="viz">
+        <svg id="detect-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+        <div id="detect-formula" class="formula"></div>
+      </div>
       <output id="detection-result" class="result" aria-live="polite" hidden></output>
     </section>
   </main>
@@ -95,8 +134,61 @@
       const generateButton = document.getElementById('generate-button');
       const detectButton = document.getElementById('detect-button');
       const generatedText = document.getElementById('generated-text');
+      const generatedTokens = document.getElementById('generated-tokens');
       const generationResult = document.getElementById('generation-result');
       const detectionResult = document.getElementById('detection-result');
+      const detectTokens = document.getElementById('detect-tokens');
+      const detectTextView = document.getElementById('detect-text-view');
+      const generateChart = document.getElementById('generate-chart');
+      const generateFormula = document.getElementById('generate-formula');
+      const detectChart = document.getElementById('detect-chart');
+      const detectFormula = document.getElementById('detect-formula');
+
+      let settings = { gamma: 0.25, z_threshold: 4.0 };
+      fetch('/api/health').then((r) => r.json()).then((h) => { settings = { gamma: h.gamma, z_threshold: h.z_threshold }; }).catch(() => {});
+
+      const MIN_T = 25;
+
+      function renderZChart(svg, tokens, threshold) {
+        const W = 640, H = 220, L = 42, R = 12, T = 12, B = 28;
+        const pts = tokens.filter((tok) => tok.green !== null).map((tok) => ({ t: tok.t, z: tok.z }));
+        const maxT = Math.max(MIN_T + 5, pts.length ? pts[pts.length - 1].t : 0);
+        const zs = pts.map((p) => p.z).concat([threshold, 0]);
+        const minZ = Math.min(-1, ...zs), maxZ = Math.max(threshold + 1, ...zs);
+        const x = (t) => L + (t / maxT) * (W - L - R);
+        const y = (z) => T + (1 - (z - minZ) / (maxZ - minZ)) * (H - T - B);
+        const path = pts.map((p, i) => (i ? 'L' : 'M') + x(p.t).toFixed(1) + ',' + y(p.z).toFixed(1)).join(' ');
+        svg.innerHTML =
+          '<rect class="inconclusive" x="' + L + '" y="' + T + '" width="' + (x(MIN_T) - L).toFixed(1) + '" height="' + (H - T - B) + '"/>' +
+          '<text x="' + (L + 4) + '" y="' + (T + 12) + '">T&lt;' + MIN_T + ' 判定不能</text>' +
+          '<line class="axis" x1="' + L + '" y1="' + y(0).toFixed(1) + '" x2="' + (W - R) + '" y2="' + y(0).toFixed(1) + '"/>' +
+          '<line class="axis" x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (H - B) + '"/>' +
+          '<line class="threshold" x1="' + L + '" y1="' + y(threshold).toFixed(1) + '" x2="' + (W - R) + '" y2="' + y(threshold).toFixed(1) + '"/>' +
+          '<text x="' + (W - R - 70) + '" y="' + (y(threshold) - 4).toFixed(1) + '">z = ' + threshold + '</text>' +
+          '<text x="4" y="' + (y(0) + 4).toFixed(1) + '">0</text>' +
+          '<text x="4" y="' + (T + 10) + '">' + maxZ.toFixed(1) + '</text>' +
+          '<text x="' + (W - R - 60) + '" y="' + (H - 8) + '">T = ' + maxT + '</text>' +
+          (path ? '<path class="z-line" d="' + path + '"/>' : '');
+      }
+
+      function renderFormula(el, detection, gamma) {
+        const T = detection.num_tokens, g = detection.green_count;
+        if (T === 0) {
+          el.innerHTML =
+            '<div>z = (g − γ·T) / √(γ(1−γ)·T)</div>' +
+            '<div class="muted">g = Green トークン数, T = 採点トークン数（先頭を除く）, γ = Green 比率</div>' +
+            '<div>T = 0 のため z と p は算出できません（採点対象トークンがありません）。判定: inconclusive</div>';
+          return;
+        }
+        const expected = gamma * T;
+        const denom = Math.sqrt(gamma * (1 - gamma) * T);
+        el.innerHTML =
+          '<div>z = (g − γ·T) / √(γ(1−γ)·T)</div>' +
+          '<div class="muted">g = Green トークン数, T = 採点トークン数（先頭を除く）, γ = Green 比率</div>' +
+          '<div>z = (' + g + ' − ' + gamma + '×' + T + ') / √(' + gamma + '×' + (1 - gamma).toFixed(2) + '×' + T + ')' +
+          ' = (' + g + ' − ' + expected.toFixed(2) + ') / ' + (denom || 0).toFixed(3) + ' = <strong>' + Number(detection.z_score).toFixed(3) + '</strong></div>' +
+          '<div>p = ½·erfc(z/√2) = ' + Number(detection.p_value).toExponential(3) + '　　判定: z &gt; ' + detection.threshold + ' かつ T ≥ ' + MIN_T + ' で「透かしあり」</div>';
+      }
 
       tabs.forEach((tab) => tab.addEventListener('click', () => {
         const selected = tab.dataset.tab;
@@ -122,6 +214,50 @@
       function verdictLabel(verdict) {
         return { watermarked: '透かしあり', not_watermarked: '透かしなし', inconclusive: '判定不能' }[verdict] || '不明';
       }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+
+      function tokenChipMarkup(tok) {
+        const cls = tok.green === null ? 'unscored' : (tok.green ? 'green' : 'red');
+        const label = tok.green === null ? '未採点（先頭トークン）' : (tok.green ? 'Green' : 'Red');
+        const title = (tok.green === null ? '' : ('前トークン ' + tok.prev_id_label + ' → ')) +
+          'ID ' + tok.id + ' / ' + label + ' / T=' + tok.t + ' / g=' + tok.green_count + ' / z=' + Number(tok.z).toFixed(3);
+        const text = tok.text === '' ? '·' : tok.text;
+        return '<span class="tok ' + cls + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
+      }
+
+      function renderTokenChips(container, tokens) {
+        // 前トークン ID はサーバから来ないので直前チップの id を引き継ぐ
+        let prevId = container.dataset.lastId ? Number(container.dataset.lastId) : null;
+        container.insertAdjacentHTML('beforeend', tokens.map((tok) => {
+          const withPrev = Object.assign({ prev_id_label: prevId === null ? '-' : String(prevId) }, tok);
+          prevId = tok.id;
+          return tokenChipMarkup(withPrev);
+        }).join(''));
+        if (tokens.length) container.dataset.lastId = String(prevId);
+      }
+
+      function resetTokenView(container) {
+        container.innerHTML = '';
+        delete container.dataset.lastId;
+      }
+
+      function applyView(target) {
+        const pressedButton = document.querySelector('.view-toggle button[data-target="' + target + '"][aria-pressed="true"]');
+        const view = pressedButton ? pressedButton.dataset.view : 'chips';
+        const chips = document.getElementById(target === 'generate' ? 'generated-tokens' : 'detect-tokens');
+        const text = document.getElementById(target === 'generate' ? 'generated-text' : 'detect-text-view');
+        chips.hidden = view !== 'chips';
+        text.hidden = view !== 'text';
+      }
+
+      document.querySelectorAll('.view-toggle button').forEach((button) => button.addEventListener('click', () => {
+        const target = button.dataset.target;
+        document.querySelectorAll('.view-toggle button[data-target="' + target + '"]').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+        applyView(target);
+      }));
 
       async function readSse(response, onEvent) {
         if (!response.ok || !response.body) throw new Error('生成リクエストに失敗しました。');
@@ -156,12 +292,28 @@
         if (!prompt) return;
         generateButton.disabled = true;
         generatedText.textContent = '';
+        resetTokenView(generatedTokens);
         generationResult.hidden = true;
+        let liveTokens = [];
+        renderZChart(generateChart, liveTokens, settings.z_threshold);
+        generateFormula.innerHTML = '';
         try {
           const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
           await readSse(response, (event, payload) => {
-            if (event === 'token') generatedText.textContent += payload.text || '';
-            if (event === 'done') showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+            if (event === 'token') {
+              generatedText.textContent += payload.text || '';
+              renderTokenChips(generatedTokens, payload.tokens || []);
+              liveTokens.push(...(payload.tokens || []));
+              renderZChart(generateChart, liveTokens, settings.z_threshold);
+            }
+            if (event === 'done') {
+              generatedText.textContent = payload.full_text;
+              resetTokenView(generatedTokens);
+              renderTokenChips(generatedTokens, payload.detection.tokens || []);
+              renderZChart(generateChart, payload.detection.tokens || [], payload.detection.threshold);
+              renderFormula(generateFormula, payload.detection, settings.gamma);
+              showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+            }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });
         } catch (error) { generationResult.className = 'result error'; generationResult.textContent = error.message; generationResult.hidden = false; }
@@ -173,10 +325,20 @@
         if (!text) return;
         detectButton.disabled = true;
         detectionResult.hidden = true;
+        resetTokenView(detectTokens);
+        detectTextView.textContent = '';
+        renderZChart(detectChart, [], settings.z_threshold);
+        detectFormula.innerHTML = '';
         try {
-          const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+          const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, include_tokens: true }) });
           if (!response.ok) throw new Error('判定リクエストに失敗しました。');
           const detection = await response.json();
+          resetTokenView(detectTokens);
+          renderTokenChips(detectTokens, detection.tokens || []);
+          detectTextView.textContent = (detection.tokens || []).map((t) => t.text).join('');
+          applyView('detect');
+          renderZChart(detectChart, detection.tokens || [], detection.threshold);
+          renderFormula(detectFormula, detection, settings.gamma);
           const message = detection.verdict === 'inconclusive' ? 'テキストが短すぎて判定できません。' : verdictLabel(detection.verdict);
           showResult(detectionResult, message, detection, detection.verdict === 'watermarked' ? 'success' : '');
         } catch (error) { detectionResult.className = 'result error'; detectionResult.textContent = error.message; detectionResult.hidden = false; }

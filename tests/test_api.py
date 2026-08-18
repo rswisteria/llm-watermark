@@ -1,4 +1,5 @@
 import inspect
+import logging
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
+from app import services as services_module
 from app.config import ServiceSettings
 from app.services import (
     DetectionService,
@@ -36,7 +38,7 @@ def test_documentation_provides_secret_free_environment_template():
         "WM_GAMMA=0.25",
         "WM_DELTA=2.0",
         "WM_Z_THRESHOLD=4.0",
-        "WM_MAX_NEW_TOKENS=400",
+        "WM_MAX_NEW_TOKENS=4096",
     ):
         assert required_default in env_lines
 
@@ -60,6 +62,19 @@ class FakeTokenizer:
     def decode(self, token_ids, skip_special_tokens=True):
         ids = [int(token_id) for token_id in token_ids]
         return "continuation:" + ",".join(str(token_id) for token_id in ids) + " "
+
+
+class PieceTokenizer(FakeTokenizer):
+    """decode が ID ごとに 'w<id>' を返す（判定 API のトークン表示テスト用）。"""
+
+    def __init__(self, ids):
+        self.ids = ids
+
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
+        return {"input_ids": torch.tensor([self.ids])}
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return "".join(f"w{int(i)}" for i in token_ids)
 
 
 class ChatTemplateTokenizer(FakeTokenizer):
@@ -116,6 +131,40 @@ def test_detection_service_returns_inconclusive_for_short_text():
     result = DetectionService(tokenizer=tokenizer, config=config).classify("short")
 
     assert result.verdict == "inconclusive"
+
+
+def test_detection_service_returns_tokens_only_when_requested():
+    from watermark import GreenListGenerator
+
+    config = WatermarkConfig(hash_key=17)
+    generator = GreenListGenerator(16, config)
+    ids = [3]
+    for _ in range(30):
+        ids.append(int(generator.green_list(ids[-1])[0]))
+    service = DetectionService(tokenizer=PieceTokenizer(ids), config=config)
+
+    plain = service.classify("x")
+    detailed = service.classify("x", include_tokens=True)
+
+    assert plain.tokens is None
+    assert plain.verdict == "watermarked"
+    assert detailed.tokens is not None
+    assert len(detailed.tokens) == len(ids)
+    assert detailed.tokens[0].model_dump() == {
+        "index": 0, "id": 3, "text": "w3", "green": None, "t": 0, "green_count": 0, "z": 0.0,
+    }
+    assert detailed.tokens[1].green is True
+    assert detailed.tokens[-1].t == detailed.num_tokens
+    assert detailed.tokens[-1].z == pytest.approx(detailed.z_score)
+    assert "tokens" not in plain.model_dump(exclude_none=True)
+
+
+def test_detection_service_short_text_with_tokens_is_inconclusive_and_has_pieces():
+    config = WatermarkConfig(hash_key=17)
+    service = DetectionService(tokenizer=PieceTokenizer([3, 4, 5]), config=config)
+    result = service.classify("x", include_tokens=True)
+    assert result.verdict == "inconclusive"
+    assert [t.text for t in result.tokens] == ["w3", "w4", "w5"]
 
 
 def test_generation_service_emits_tokens_then_done(monkeypatch):
@@ -214,6 +263,69 @@ def test_generation_service_with_no_continuation_emits_inconclusive_done():
     assert events[-1].payload["detection"]["num_tokens"] == 0
 
 
+def test_generation_stream_carries_live_token_details_matching_final_detection():
+    service, _ = make_generation_service()
+
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+
+    token_events = [e for e in events if e.kind == "token"]
+    live = [tok for e in token_events for tok in e.payload["tokens"]]
+    done = events[-1].payload["detection"]
+
+    assert all("text" in e.payload for e in token_events)
+    assert [tok["index"] for tok in live] == list(range(25))
+    assert live[0]["green"] is None and live[0]["t"] == 0
+    assert live[-1]["t"] == done["num_tokens"] == 24
+    assert live[-1]["z"] == pytest.approx(done["z_score"])
+    assert done["tokens"] is not None
+    assert [tok["id"] for tok in done["tokens"]] == [tok["id"] for tok in live]
+    assert [tok["z"] for tok in done["tokens"]] == pytest.approx([tok["z"] for tok in live])
+
+
+def test_generation_stream_skips_special_tokens_in_live_scoring():
+    tokenizer = FakeTokenizer()
+    model = FakeModel(tokenizer, continuation_ids=[*range(3, 30), 0])  # 0 は special
+    service = GenerationService(
+        settings=ServiceSettings(hash_key=17), config=WatermarkConfig(hash_key=17),
+        tokenizer=tokenizer, model=model,
+    )
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+    live = [tok for e in events if e.kind == "token" for tok in e.payload["tokens"]]
+    done = events[-1].payload["detection"]
+    assert 0 not in [tok["id"] for tok in live]
+    assert live[-1]["z"] == pytest.approx(done["z_score"])
+    assert len(done["tokens"]) == len(live) == 27
+
+
+def test_generation_stream_logs_and_recovers_when_live_scoring_fails(monkeypatch, caplog):
+    class BrokenTokenPieceBuilder(services_module.TokenPieceBuilder):
+        def push(self, token_ids):
+            raise RuntimeError("boom")
+
+    # Rebind the name looked up inside GenerationService._generate only; the
+    # separate TokenPieceBuilder used by the `done` event's token_pieces()
+    # helper (defined in app.token_pieces) is untouched, so that path keeps
+    # working even though live scoring is broken.
+    monkeypatch.setattr(services_module, "TokenPieceBuilder", BrokenTokenPieceBuilder)
+
+    service, _ = make_generation_service()
+    with caplog.at_level(logging.ERROR, logger="app.services"):
+        events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+
+    token_events = [e for e in events if e.kind == "token"]
+    assert token_events
+    assert all(e.payload["tokens"] == [] for e in token_events)
+
+    assert events[-1].kind == "done"
+    done = events[-1].payload["detection"]
+    assert done["tokens"] is not None
+    assert len(done["tokens"]) == done["num_tokens"] + 1
+
+    assert any(
+        "live watermark scoring failed" in record.message for record in caplog.records
+    )
+
+
 def test_generation_service_rejects_third_queued_request():
     service, _ = make_generation_service()
 
@@ -282,7 +394,22 @@ def test_generation_request_clamps_only_at_service_boundary():
     assert request.max_new_tokens == 999
     assert ServiceSettings.from_env({"WM_HASH_KEY": "12345"}).max_tokens(
         request.max_new_tokens
-    ) == 400
+    ) == 999
+    assert ServiceSettings.from_env({"WM_HASH_KEY": "12345"}).max_tokens(99999) == 4096
+    assert ServiceSettings.from_env(
+        {"WM_HASH_KEY": "12345", "WM_MAX_NEW_TOKENS": "8000"}
+    ).max_tokens(99999) == 8000
+
+
+def test_generation_request_without_max_new_tokens_uses_configured_maximum():
+    from app.schemas import GenerateRequest
+
+    request = GenerateRequest(prompt="test")
+
+    assert request.max_new_tokens is None
+    assert ServiceSettings.from_env(
+        {"WM_HASH_KEY": "12345", "WM_MAX_NEW_TOKENS": "4096"}
+    ).max_tokens(request.max_new_tokens) == 4096
 
 
 @pytest.mark.parametrize("max_new_tokens", [0, -1])
@@ -301,12 +428,17 @@ class FakeApiDetectionService:
     def is_ready(self):
         return True
 
-    def classify(self, text):
-        self.calls.append(text)
+    def classify(self, text, include_tokens=False):
+        self.calls.append((text, include_tokens))
         if self.next_error:
             raise self.next_error
-        from app.schemas import DetectionResponse
+        from app.schemas import DetectionResponse, TokenDetail
 
+        tokens = None
+        if include_tokens:
+            tokens = [
+                TokenDetail(index=0, id=1, text="a", green=None, t=0, green_count=0, z=0.0)
+            ]
         return DetectionResponse(
             verdict="inconclusive" if len(text) < 10 else "not_watermarked",
             num_tokens=len(text),
@@ -314,6 +446,7 @@ class FakeApiDetectionService:
             z_score=0.0,
             p_value=1.0,
             threshold=4.0,
+            tokens=tokens,
         )
 
 
@@ -430,6 +563,32 @@ def test_detect_returns_expected_statistics():
     assert "hash_key" not in response.json()
 
 
+def test_detect_endpoint_forwards_include_tokens():
+    client, _, fake_detection = make_api_client()
+    client.post("/api/detect", json={"text": "十分に長いテキストです"})
+    client.post("/api/detect", json={"text": "十分に長いテキストです", "include_tokens": True})
+    assert fake_detection.calls[-2:] == [
+        ("十分に長いテキストです", False),
+        ("十分に長いテキストです", True),
+    ]
+
+
+def test_detect_response_omits_tokens_key_when_not_requested():
+    client, _, _ = make_api_client()
+    response = client.post("/api/detect", json={"text": "十分に長いテキストです"})
+    assert "tokens" not in response.json()
+
+
+def test_detect_response_includes_token_details_when_requested():
+    client, _, _ = make_api_client()
+    response = client.post(
+        "/api/detect", json={"text": "十分に長いテキストです", "include_tokens": True}
+    )
+    tokens = response.json()["tokens"]
+    assert tokens[0]["id"] == 1
+    assert tokens[0]["green"] is None
+
+
 def test_generate_stream_contains_token_and_done_events():
     client, fake_service, _ = make_api_client()
     response = client.post(
@@ -438,7 +597,23 @@ def test_generate_stream_contains_token_and_done_events():
     assert response.status_code == 200
     assert "event: token" in response.text
     assert "event: done" in response.text
-    assert fake_service.calls[-1]["max_new_tokens"] == 400
+    assert fake_service.calls[-1]["max_new_tokens"] == 999
+
+
+def test_generate_without_max_new_tokens_uses_configured_maximum():
+    client, fake_service, _ = make_api_client()
+    response = client.post("/api/generate", json={"prompt": "テスト"})
+    assert response.status_code == 200
+    assert fake_service.calls[-1]["max_new_tokens"] == 4096
+
+
+def test_generate_clamps_max_new_tokens_to_configured_maximum():
+    client, fake_service, _ = make_api_client()
+    response = client.post(
+        "/api/generate", json={"prompt": "テスト", "max_new_tokens": 99999}
+    )
+    assert response.status_code == 200
+    assert fake_service.calls[-1]["max_new_tokens"] == 4096
 
 
 def test_generate_stream_forwards_error_event_after_tokens():

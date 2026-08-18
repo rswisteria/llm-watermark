@@ -68,9 +68,9 @@ def create_app(
         logger.error("unexpected API error: %s", type(exc).__name__)
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
-    @app.post("/api/detect", response_model=DetectionResponse)
+    @app.post("/api/detect", response_model=DetectionResponse, response_model_exclude_none=True)
     async def detect(payload: DetectRequest):
-        return detection.classify(payload.text)
+        return detection.classify(payload.text, include_tokens=payload.include_tokens)
 
     @app.post("/api/generate")
     def generate(payload: GenerateRequest):

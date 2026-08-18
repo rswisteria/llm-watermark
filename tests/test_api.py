@@ -62,6 +62,19 @@ class FakeTokenizer:
         return "continuation:" + ",".join(str(token_id) for token_id in ids) + " "
 
 
+class PieceTokenizer(FakeTokenizer):
+    """decode が ID ごとに 'w<id>' を返す（判定 API のトークン表示テスト用）。"""
+
+    def __init__(self, ids):
+        self.ids = ids
+
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
+        return {"input_ids": torch.tensor([self.ids])}
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return "".join(f"w{int(i)}" for i in token_ids)
+
+
 class ChatTemplateTokenizer(FakeTokenizer):
     def __init__(self):
         self.chat_template_kwargs = None
@@ -116,6 +129,40 @@ def test_detection_service_returns_inconclusive_for_short_text():
     result = DetectionService(tokenizer=tokenizer, config=config).classify("short")
 
     assert result.verdict == "inconclusive"
+
+
+def test_detection_service_returns_tokens_only_when_requested():
+    from watermark import GreenListGenerator
+
+    config = WatermarkConfig(hash_key=17)
+    generator = GreenListGenerator(16, config)
+    ids = [3]
+    for _ in range(30):
+        ids.append(int(generator.green_list(ids[-1])[0]))
+    service = DetectionService(tokenizer=PieceTokenizer(ids), config=config)
+
+    plain = service.classify("x")
+    detailed = service.classify("x", include_tokens=True)
+
+    assert plain.tokens is None
+    assert plain.verdict == "watermarked"
+    assert detailed.tokens is not None
+    assert len(detailed.tokens) == len(ids)
+    assert detailed.tokens[0].model_dump() == {
+        "index": 0, "id": 3, "text": "w3", "green": None, "t": 0, "green_count": 0, "z": 0.0,
+    }
+    assert detailed.tokens[1].green is True
+    assert detailed.tokens[-1].t == detailed.num_tokens
+    assert detailed.tokens[-1].z == pytest.approx(detailed.z_score)
+    assert "tokens" not in plain.model_dump(exclude_none=True)
+
+
+def test_detection_service_short_text_with_tokens_is_inconclusive_and_has_pieces():
+    config = WatermarkConfig(hash_key=17)
+    service = DetectionService(tokenizer=PieceTokenizer([3, 4, 5]), config=config)
+    result = service.classify("x", include_tokens=True)
+    assert result.verdict == "inconclusive"
+    assert [t.text for t in result.tokens] == ["w3", "w4", "w5"]
 
 
 def test_generation_service_emits_tokens_then_done(monkeypatch):
@@ -316,8 +363,8 @@ class FakeApiDetectionService:
     def is_ready(self):
         return True
 
-    def classify(self, text):
-        self.calls.append(text)
+    def classify(self, text, include_tokens=False):
+        self.calls.append((text, include_tokens))
         if self.next_error:
             raise self.next_error
         from app.schemas import DetectionResponse
@@ -443,6 +490,16 @@ def test_detect_returns_expected_statistics():
     assert response.status_code == 200
     assert response.json()["threshold"] == 4.0
     assert "hash_key" not in response.json()
+
+
+def test_detect_endpoint_forwards_include_tokens():
+    client, _, fake_detection = make_api_client()
+    client.post("/api/detect", json={"text": "十分に長いテキストです"})
+    client.post("/api/detect", json={"text": "十分に長いテキストです", "include_tokens": True})
+    assert fake_detection.calls[-2:] == [
+        ("十分に長いテキストです", False),
+        ("十分に長いテキストです", True),
+    ]
 
 
 def test_generate_stream_contains_token_and_done_events():

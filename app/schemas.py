@@ -34,6 +34,7 @@ class GenerateRequest(BaseModel):
 
 class DetectRequest(BaseModel):
     text: str
+    include_tokens: bool = False
 
     @field_validator("text")
     @classmethod
@@ -44,6 +45,17 @@ class DetectRequest(BaseModel):
             raise ValueError("text must not exceed 10000 characters")
         return value
 
+
+class TokenDetail(BaseModel):
+    index: int
+    id: int
+    text: str
+    green: bool | None
+    t: int
+    green_count: int
+    z: float
+
+
 class DetectionResponse(BaseModel):
     verdict: Literal["watermarked", "not_watermarked", "inconclusive"]
     num_tokens: int
@@ -51,6 +63,7 @@ class DetectionResponse(BaseModel):
     z_score: float
     p_value: float
     threshold: float
+    tokens: list[TokenDetail] | None = None
 
 
 class HealthResponse(BaseModel):

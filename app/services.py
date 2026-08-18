@@ -13,8 +13,15 @@ from transformers import (
 )
 
 from app.config import ServiceSettings
-from app.schemas import DetectionResponse
-from watermark import WatermarkConfig, WatermarkDetector, WatermarkLogitsProcessor
+from app.schemas import DetectionResponse, TokenDetail
+from app.token_pieces import token_pieces
+from watermark import (
+    DetectionStep,
+    IncrementalScorer,
+    WatermarkConfig,
+    WatermarkDetector,
+    WatermarkLogitsProcessor,
+)
 
 
 class ModelNotReadyError(RuntimeError):
@@ -44,7 +51,9 @@ class GenerationLease:
                 self._slots.release()
 
 
-def _inconclusive_response(config: WatermarkConfig, token_count: int = 0) -> DetectionResponse:
+def _inconclusive_response(
+    config: WatermarkConfig, token_count: int = 0, tokens: list[TokenDetail] | None = None
+) -> DetectionResponse:
     return DetectionResponse(
         verdict="inconclusive",
         num_tokens=token_count,
@@ -52,6 +61,7 @@ def _inconclusive_response(config: WatermarkConfig, token_count: int = 0) -> Det
         z_score=0.0,
         p_value=1.0,
         threshold=config.z_threshold,
+        tokens=tokens,
     )
 
 
@@ -60,7 +70,9 @@ def _is_short_detection_error(exc: ValueError) -> bool:
     return "at least two" in message or "scorable" in message
 
 
-def _detection_response(result, config: WatermarkConfig) -> DetectionResponse:
+def _detection_response(
+    result, config: WatermarkConfig, tokens: list[TokenDetail] | None = None
+) -> DetectionResponse:
     if result.token_count < 25:
         verdict = "inconclusive"
     else:
@@ -72,20 +84,45 @@ def _detection_response(result, config: WatermarkConfig) -> DetectionResponse:
         z_score=result.z_score,
         p_value=result.p_value,
         threshold=config.z_threshold,
+        tokens=tokens,
     )
 
 
+def _steps_to_tokens(steps: list[DetectionStep], pieces: list[str]) -> list[TokenDetail]:
+    return [
+        TokenDetail(
+            index=step.index,
+            id=step.token_id,
+            text=piece,
+            green=step.is_green,
+            t=step.scored,
+            green_count=step.green_count,
+            z=step.z_score,
+        )
+        for step, piece in zip(steps, pieces)
+    ]
+
+
 def _classify_token_ids(
-    token_ids: list[int], vocab_size: int, config: WatermarkConfig
+    token_ids: list[int],
+    vocab_size: int,
+    config: WatermarkConfig,
+    tokenizer=None,
+    include_tokens: bool = False,
 ) -> DetectionResponse:
     detector = WatermarkDetector(vocab_size, config)
+    tokens = None
+    if include_tokens and tokenizer is not None:
+        scorer = IncrementalScorer(vocab_size, config)
+        steps = [scorer.push(token_id) for token_id in token_ids]
+        tokens = _steps_to_tokens(steps, token_pieces(tokenizer, token_ids))
     try:
         result = detector.detect_token_ids(token_ids)
     except ValueError as exc:
         if _is_short_detection_error(exc):
-            return _inconclusive_response(config, max(0, len(token_ids) - 1))
+            return _inconclusive_response(config, max(0, len(token_ids) - 1), tokens)
         raise
-    return _detection_response(result, config)
+    return _detection_response(result, config, tokens)
 
 
 class DetectionService:
@@ -96,17 +133,23 @@ class DetectionService:
     def is_ready(self) -> bool:
         return self.tokenizer is not None
 
-    def classify(self, text: str) -> DetectionResponse:
+    def _token_ids(self, text: str) -> list[int]:
+        input_ids = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
+        token_ids = [int(i) for i in input_ids.tolist()]
+        if token_ids and token_ids[0] == getattr(self.tokenizer, "bos_token_id", None):
+            token_ids = token_ids[1:]
+        return token_ids
+
+    def classify(self, text: str, include_tokens: bool = False) -> DetectionResponse:
         if not self.is_ready():
             raise ModelNotReadyError("tokenizer is not ready")
-        detector = WatermarkDetector(len(self.tokenizer), self.config, self.tokenizer)
-        try:
-            result = detector.detect(text)
-        except ValueError as exc:
-            if _is_short_detection_error(exc):
-                return _inconclusive_response(self.config)
-            raise
-        return _detection_response(result, self.config)
+        return _classify_token_ids(
+            self._token_ids(text),
+            len(self.tokenizer),
+            self.config,
+            tokenizer=self.tokenizer,
+            include_tokens=include_tokens,
+        )
 
 
 class GenerationService:

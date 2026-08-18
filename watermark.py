@@ -182,7 +182,6 @@ class WatermarkDetector:
         self.config = config
         self.tokenizer = tokenizer
         self.vocab_size = vocab_size
-        self.generator = GreenListGenerator(vocab_size, config)
 
     def detect_token_ids_detailed(
         self, token_ids: Sequence[int]

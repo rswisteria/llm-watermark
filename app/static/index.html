@@ -95,6 +95,16 @@
     .tamper-stats div { padding: .45rem .65rem; border: 1px solid #d7e0ef; border-radius: .4rem; background: #fff; }
     .tamper-stats dt { color: var(--muted); font-size: .82rem; }
     .tamper-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .inspector { margin-top: 1.25rem; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; }
+    .inspector h3 { margin: 0 0 .3rem; font-size: 1rem; }
+    .cand { display: grid; grid-template-columns: 8rem 1fr 4.5rem 4.5rem 4rem; gap: .5rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eef1f6; font-variant-numeric: tabular-nums; font-size: .9rem; }
+    .cand.head { color: var(--muted); font-size: .8rem; }
+    .cand.chosen { background: #fff8e6; }
+    .cand .tokcell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    .bar { position: relative; height: 12px; background: #eef1f6; border-radius: 3px; overflow: hidden; }
+    .bar .raw { position: absolute; left: 0; top: 0; bottom: 0; background: #8b95a7; }
+    .bar .boost { position: absolute; top: 0; bottom: 0; background: #087443; }
+    .tok.selected { outline: 2px solid var(--brand); }
   </style>
 </head>
 <body>
@@ -122,6 +132,11 @@
       <div id="generated-tokens" class="tokens" aria-live="polite"></div>
       <p class="legend"><span class="tok green">Green</span> <span class="tok red">Red</span> <span class="tok unscored">未採点（先頭）</span> — ホバーで前トークンID・T・累積 z を表示</p>
       <pre id="generated-text" aria-live="polite" hidden></pre>
+      <div id="inspector" class="inspector" hidden>
+        <h3 id="inspector-title">ステップの候補</h3>
+        <p class="legend">チップをクリックすると、そのトークンを選ぶ直前の候補（元 logit 上位 10 ∪ 補正後上位 10）を表示します。確率は temperature 0.7 適用後の softmax（top-p 0.8 / top-k 20 の打ち切り前）。</p>
+        <div id="inspector-body"></div>
+      </div>
       <div class="viz">
         <svg id="generate-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
         <div id="generate-formula" class="formula"></div>
@@ -240,10 +255,15 @@
       const detectChart = document.getElementById('detect-chart');
       const detectFormula = document.getElementById('detect-formula');
       const generateTamperButton = document.getElementById('generate-tamper');
+      const inspector = document.getElementById('inspector');
+      const inspectorTitle = document.getElementById('inspector-title');
+      const inspectorBody = document.getElementById('inspector-body');
+      let lastSteps = null;   // 生成ハンドラの done で payload.steps を保存、開始時に null
+      let lastDelta = null;   // done で settings.delta（/api/health の delta を settings に追加）
 
-      let settings = { gamma: 0.25, z_threshold: 4.0 };
+      let settings = { gamma: 0.25, z_threshold: 4.0, delta: null };
       fetch('/api/health').then((r) => r.json()).then((h) => {
-        settings = { gamma: h.gamma, z_threshold: h.z_threshold };
+        settings = { gamma: h.gamma, z_threshold: h.z_threshold, delta: h.delta };
         document.querySelectorAll('.lane-gamma').forEach((i) => { i.value = h.gamma; });
         document.querySelectorAll('.lane-delta').forEach((i) => { i.value = h.delta; });
       }).catch(() => {});
@@ -327,7 +347,7 @@
         const title = (tok.green === null ? '' : ('前トークン ' + tok.prev_id_label + ' → ')) +
           'ID ' + tok.id + ' / ' + label + ' / T=' + tok.t + ' / g=' + tok.green_count + ' / z=' + Number(tok.z).toFixed(3);
         const text = tok.text === '' ? '·' : tok.text;
-        return '<span class="tok ' + cls + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
+        return '<span class="tok ' + cls + '" data-index="' + tok.index + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
       }
 
       function renderTokenChips(container, tokens) {
@@ -345,6 +365,42 @@
         container.innerHTML = '';
         delete container.dataset.lastId;
       }
+
+      function renderInspector(step, delta) {
+        if (!step) {
+          inspectorTitle.textContent = 'このステップは記録されていません（先頭 400 ステップのみ）';
+          inspectorBody.innerHTML = '';
+          inspector.hidden = false;
+          return;
+        }
+        const cands = step.candidates.slice();
+        const min = Math.min(...cands.map((c) => Math.min(c.raw, c.adjusted)));
+        const max = Math.max(...cands.map((c) => Math.max(c.raw, c.adjusted)));
+        const span = (max - min) || 1;
+        const pct = (v) => (((v - min) / span) * 100).toFixed(1) + '%';
+        inspectorTitle.textContent = 'ステップ ' + step.index + ' の候補（選ばれたトークン: ID ' + step.chosen_id + '）';
+        let html = '<div class="cand head"><span>候補</span><span>logit（灰: 元、緑: +δ）</span><span>元</span><span>補正後</span><span>確率</span></div>';
+        cands.forEach((c) => {
+          const chosen = c.id === step.chosen_id ? ' chosen' : '';
+          const boostLeft = pct(Math.min(c.raw, c.adjusted));
+          const boostWidth = (((Math.abs(c.adjusted - c.raw)) / span) * 100).toFixed(1) + '%';
+          html += '<div class="cand' + chosen + '">' +
+            '<span class="tokcell">' + escapeHtml(c.text === '' ? '·' : c.text) + ' <span class="muted">#' + c.id + '</span>' + (c.green ? ' <span class="tok green">G</span>' : '') + '</span>' +
+            '<span class="bar"><span class="raw" style="width:' + pct(c.raw) + '"></span>' + (c.green && c.adjusted !== c.raw ? '<span class="boost" style="left:' + boostLeft + ';width:' + boostWidth + '"></span>' : '') + '</span>' +
+            '<span>' + c.raw.toFixed(2) + '</span><span>' + c.adjusted.toFixed(2) + '</span><span>' + (c.prob * 100).toFixed(1) + '%</span></div>';
+        });
+        inspectorBody.innerHTML = html;
+        inspector.hidden = false;
+      }
+
+      generatedTokens.addEventListener('click', (ev) => {
+        const chip = ev.target.closest('.tok[data-index]');
+        if (!chip || !lastSteps) return;
+        generatedTokens.querySelectorAll('.tok.selected').forEach((el) => el.classList.remove('selected'));
+        chip.classList.add('selected');
+        const index = Number(chip.dataset.index);
+        renderInspector(lastSteps.find((s) => s.index === index) || null, lastDelta);
+      });
 
       function applyView(target) {
         const pressedButton = document.querySelector('.view-toggle button[data-target="' + target + '"][aria-pressed="true"]');
@@ -397,11 +453,14 @@
         resetTokenView(generatedTokens);
         generationResult.hidden = true;
         generateTamperButton.hidden = true;
+        lastSteps = null;
+        lastDelta = null;
+        inspector.hidden = true;
         let liveTokens = [];
         renderZChart(generateChart, liveTokens, settings.z_threshold);
         generateFormula.innerHTML = '';
         try {
-          const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+          const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, inspect: true }) });
           await readSse(response, (event, payload) => {
             if (event === 'token') {
               generatedText.textContent += payload.text || '';
@@ -418,6 +477,9 @@
               showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
               lastGeneration = { text: payload.full_text };
               generateTamperButton.hidden = false;
+              lastSteps = payload.steps || null;
+              lastDelta = settings.delta;
+              generatedTokens.title = lastSteps ? 'チップをクリックすると候補を表示' : '';
             }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });

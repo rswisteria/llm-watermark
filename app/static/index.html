@@ -92,6 +92,10 @@
     .matrix .wm { color: var(--success); font-weight: 650; }
     .matrix .nowm { color: var(--danger); }
     .muted { color: var(--muted); }
+    .tamper-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .65rem; margin: .5rem 0 1rem; }
+    .tamper-stats div { padding: .45rem .65rem; border: 1px solid #d7e0ef; border-radius: .4rem; background: #fff; }
+    .tamper-stats dt { color: var(--muted); font-size: .82rem; }
+    .tamper-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -104,6 +108,7 @@
       <button class="tab" type="button" data-tab="generate" aria-selected="true" aria-controls="generate-panel">生成</button>
       <button class="tab" type="button" data-tab="detect" aria-selected="false" aria-controls="detect-panel">判定</button>
       <button class="tab" type="button" data-tab="compare" aria-selected="false" aria-controls="compare-panel">鍵比較</button>
+      <button class="tab" type="button" data-tab="tamper" aria-selected="false" aria-controls="tamper-panel">改ざん実験</button>
     </nav>
 
     <section id="generate-panel" class="panel" data-panel="generate">
@@ -123,6 +128,7 @@
         <div id="generate-formula" class="formula"></div>
       </div>
       <output id="generation-result" class="result" aria-live="polite" hidden></output>
+      <button id="generate-tamper" class="tab" type="button" hidden>この文章で改ざん実験</button>
     </section>
 
     <section id="detect-panel" class="panel" data-panel="detect" hidden>
@@ -193,6 +199,29 @@
         <p class="legend">セルをクリックすると、その文章をその鍵で着色して上のレーンに表示します。</p>
       </div>
     </section>
+
+    <section id="tamper-panel" class="panel" data-panel="tamper" hidden>
+      <h2>文章を書き換えて透かしが消える様子を見る</h2>
+      <p class="intro">生成タブ・鍵比較タブの「この文章で改ざん実験」から持ち込むか、下に貼り付けてください。編集するたびに z を再計算します。</p>
+      <p id="tamper-source" class="legend">持ち込み元: なし（既定鍵で判定）</p>
+      <div class="tamper-stats" id="tamper-stats" hidden>
+        <div><dt>元の z</dt><dd id="tamper-z0">-</dd></div>
+        <div><dt>現在の z</dt><dd id="tamper-z1">-</dd></div>
+        <div><dt>判定</dt><dd id="tamper-verdict">-</dd></div>
+        <div><dt>編集文字数</dt><dd id="tamper-dist">-</dd></div>
+      </div>
+      <label for="tamper-text">文章（編集できます）</label>
+      <textarea id="tamper-text" maxlength="10000" placeholder="ここに文章を貼り付けるか、他のタブから持ち込んでください"></textarea>
+      <div class="compare-controls">
+        <button id="tamper-reset" class="tab" type="button">元に戻す</button>
+        <span id="tamper-error" class="muted"></span>
+      </div>
+      <div id="tamper-tokens" class="tokens"></div>
+      <div class="viz">
+        <svg id="tamper-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+        <div id="tamper-formula" class="formula"></div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -211,6 +240,7 @@
       const generateFormula = document.getElementById('generate-formula');
       const detectChart = document.getElementById('detect-chart');
       const detectFormula = document.getElementById('detect-formula');
+      const generateTamperButton = document.getElementById('generate-tamper');
 
       let settings = { gamma: 0.25, z_threshold: 4.0 };
       fetch('/api/health').then((r) => r.json()).then((h) => {
@@ -262,11 +292,12 @@
           '<div>p = ½·erfc(z/√2) = ' + Number(detection.p_value).toExponential(3) + '　　判定: z &gt; ' + detection.threshold + ' かつ T ≥ ' + MIN_T + ' で「透かしあり」</div>';
       }
 
-      tabs.forEach((tab) => tab.addEventListener('click', () => {
-        const selected = tab.dataset.tab;
-        tabs.forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
-        panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== selected; });
-      }));
+      function activateTab(name) {
+        tabs.forEach((item) => item.setAttribute('aria-selected', String(item.dataset.tab === name)));
+        panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== name; });
+      }
+
+      tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
 
       function statsMarkup(detection) {
         return '<dl class="stats">' +
@@ -366,6 +397,7 @@
         generatedText.textContent = '';
         resetTokenView(generatedTokens);
         generationResult.hidden = true;
+        generateTamperButton.hidden = true;
         let liveTokens = [];
         renderZChart(generateChart, liveTokens, settings.z_threshold);
         generateFormula.innerHTML = '';
@@ -385,6 +417,8 @@
               renderZChart(generateChart, payload.detection.tokens || [], payload.detection.threshold);
               renderFormula(generateFormula, payload.detection, settings.gamma);
               showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+              lastGeneration = { text: payload.full_text };
+              generateTamperButton.hidden = false;
             }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });
@@ -568,6 +602,90 @@
       lanes.forEach((lane) => lane.tamperBtn.addEventListener('click', () => {
         if (typeof sendToTamper === 'function') sendToTamper({ text: lane.text, watermark: detectOverride(lane), label: LANE_LABELS[lane.index] });
       }));
+
+      const tamper = { original: '', watermark: undefined, originalDetection: null, seq: 0, timer: null };
+      const tamperText = document.getElementById('tamper-text');
+      const tamperTokens = document.getElementById('tamper-tokens');
+      const tamperChart = document.getElementById('tamper-chart');
+      const tamperFormula = document.getElementById('tamper-formula');
+      const tamperStats = document.getElementById('tamper-stats');
+      const tamperError = document.getElementById('tamper-error');
+
+      function levenshtein(a, b) {
+        if (a.length > 2000 || b.length > 2000) return null;
+        const prev = new Array(b.length + 1);
+        for (let j = 0; j <= b.length; j++) prev[j] = j;
+        for (let i = 1; i <= a.length; i++) {
+          let diag = prev[0]; prev[0] = i;
+          for (let j = 1; j <= b.length; j++) {
+            const tmp = prev[j];
+            prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+            diag = tmp;
+          }
+        }
+        return prev[b.length];
+      }
+
+      function renderTamper(det) {
+        resetTokenView(tamperTokens);
+        renderTokenChips(tamperTokens, det.tokens || []);
+        renderZChart(tamperChart, det.tokens || [], det.threshold);
+        renderFormula(tamperFormula, det, settings.gamma);
+        const z0 = tamper.originalDetection ? Number(tamper.originalDetection.z_score).toFixed(3) : '-';
+        document.getElementById('tamper-z0').textContent = z0;
+        document.getElementById('tamper-z1').textContent = Number(det.z_score).toFixed(3);
+        const v0 = tamper.originalDetection ? verdictLabel(tamper.originalDetection.verdict) : '-';
+        document.getElementById('tamper-verdict').textContent = v0 + ' → ' + verdictLabel(det.verdict);
+        const dist = levenshtein(tamper.original, tamperText.value);
+        const lenDiff = Math.abs(tamperText.value.length - tamper.original.length);
+        document.getElementById('tamper-dist').textContent = dist === null ? ('約 ' + lenDiff + '（長文のため文字数差）') : String(dist);
+        tamperStats.hidden = false;
+      }
+
+      async function runTamperDetect() {
+        const text = tamperText.value.trim();
+        if (!text) { tamperStats.hidden = true; resetTokenView(tamperTokens); renderZChart(tamperChart, [], settings.z_threshold); tamperFormula.innerHTML = ''; return; }
+        const seq = ++tamper.seq;
+        try {
+          const det = await detectWith(text, tamper.watermark);
+          if (seq !== tamper.seq) return;           // 古い応答は捨てる
+          if (!tamper.original) { tamper.original = text; }
+          if (!tamper.originalDetection) tamper.originalDetection = det;
+          tamperError.textContent = '';
+          renderTamper(det);
+        } catch (error) {
+          if (seq !== tamper.seq) return;
+          tamperError.textContent = error.message;   // 前回の表示は残す
+        }
+      }
+
+      function scheduleTamperDetect() {
+        clearTimeout(tamper.timer);
+        tamper.timer = setTimeout(runTamperDetect, 300);
+      }
+      tamperText.addEventListener('input', scheduleTamperDetect);
+
+      document.getElementById('tamper-reset').addEventListener('click', () => {
+        tamperText.value = tamper.original;
+        runTamperDetect();
+      });
+
+      function sendToTamper(payload) {
+        tamper.original = payload.text || '';
+        tamper.watermark = payload.watermark;
+        tamper.originalDetection = null;
+        tamperText.value = tamper.original;
+        const keyLabel = payload.watermark && payload.watermark.hash_key !== undefined ? '鍵 …' + String(payload.watermark.hash_key).slice(-4) : '既定鍵';
+        document.getElementById('tamper-source').textContent = '持ち込み元: ' + (payload.label || '貼り付け') + '（' + keyLabel + (payload.watermark && payload.watermark.gamma !== undefined ? '、γ=' + payload.watermark.gamma : '') + ' で判定）';
+        activateTab('tamper');
+        runTamperDetect();
+      }
+
+      // 生成タブからの持ち込み
+      let lastGeneration = null;   // 生成ハンドラの done で {text: payload.full_text} を保存し generateTamperButton.hidden = false にする
+      generateTamperButton.addEventListener('click', () => {
+        if (lastGeneration) sendToTamper({ text: lastGeneration.text, watermark: undefined, label: '生成タブ' });
+      });
     })();
   </script>
 </body>

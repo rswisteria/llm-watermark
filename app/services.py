@@ -14,7 +14,14 @@ from transformers import (
 
 from app.config import ServiceSettings
 from app.inspection import InspectingProcessor
-from app.schemas import CandidateDetail, DetectionResponse, StepInspection, TokenDetail
+from app.schemas import (
+    CandidateDetail,
+    DetectionResponse,
+    StepInspection,
+    TokenDetail,
+    TokenizeResponse,
+    TokenizedToken,
+)
 from app.streaming import IdRecordingStreamer
 from app.token_pieces import TokenPieceBuilder, token_pieces
 from watermark import (
@@ -173,6 +180,16 @@ class DetectionService:
             config or self.config,
             tokenizer=self.tokenizer,
             include_tokens=include_tokens,
+        )
+
+    def tokenize(self, text: str) -> TokenizeResponse:
+        if not self.is_ready():
+            raise ModelNotReadyError("tokenizer is not ready")
+        ids = self._token_ids(text)
+        pieces = token_pieces(self.tokenizer, ids)
+        return TokenizeResponse(
+            count=len(ids),
+            tokens=[TokenizedToken(index=i, id=t, text=p) for i, (t, p) in enumerate(zip(ids, pieces))],
         )
 
 

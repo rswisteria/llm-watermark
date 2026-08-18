@@ -63,6 +63,30 @@ class DetectRequest(BaseModel):
         return value
 
 
+class TokenizeRequest(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be empty")
+        if len(value) > 10000:
+            raise ValueError("text must not exceed 10000 characters")
+        return value
+
+
+class TokenizedToken(BaseModel):
+    index: int
+    id: int
+    text: str
+
+
+class TokenizeResponse(BaseModel):
+    count: int
+    tokens: list[TokenizedToken]
+
+
 class TokenDetail(BaseModel):
     index: int
     id: int

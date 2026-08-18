@@ -240,6 +240,21 @@ def test_detection_service_short_text_with_tokens_is_inconclusive_and_has_pieces
     assert [t.text for t in result.tokens] == ["w3", "w4", "w5"]
 
 
+def test_detection_service_tokenize_returns_pieces():
+    service = DetectionService(tokenizer=PieceTokenizer([3, 4, 5]), config=WatermarkConfig(hash_key=17))
+    result = service.tokenize("x")
+    assert result.count == 3
+    assert [t.model_dump() for t in result.tokens] == [
+        {"index": 0, "id": 3, "text": "w3"}, {"index": 1, "id": 4, "text": "w4"}, {"index": 2, "id": 5, "text": "w5"},
+    ]
+
+
+def test_detection_service_tokenize_requires_tokenizer():
+    service = DetectionService(tokenizer=None, config=WatermarkConfig(hash_key=17))
+    with pytest.raises(ModelNotReadyError):
+        service.tokenize("x")
+
+
 def test_generation_service_emits_tokens_then_done(monkeypatch):
     service, model = make_generation_service()
     seed_calls = []
@@ -496,10 +511,18 @@ def test_generation_request_rejects_non_positive_max_new_tokens(max_new_tokens):
 class FakeApiDetectionService:
     def __init__(self):
         self.calls = []
+        self.tokenize_calls = []
         self.next_error = None
 
     def is_ready(self):
         return True
+
+    def tokenize(self, text):
+        self.tokenize_calls.append(text)
+        if self.next_error:
+            raise self.next_error
+        from app.schemas import TokenizeResponse, TokenizedToken
+        return TokenizeResponse(count=1, tokens=[TokenizedToken(index=0, id=1, text=text)])
 
     def classify(self, text, include_tokens=False, config=None):
         self.calls.append((text, include_tokens, config))
@@ -636,6 +659,28 @@ def test_detect_endpoint_rejects_unknown_watermark_field():
     )
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid request"}
+
+
+def test_tokenize_endpoint_forwards_text_and_returns_json():
+    client, _, fake_detection = make_api_client()
+    response = client.post("/api/tokenize", json={"text": "こんにちは"})
+    assert response.status_code == 200
+    assert response.json() == {"count": 1, "tokens": [{"index": 0, "id": 1, "text": "こんにちは"}]}
+    assert fake_detection.tokenize_calls == ["こんにちは"]
+
+
+@pytest.mark.parametrize("body", [{"text": ""}, {"text": "  "}, {"text": "あ" * 10001}, {}])
+def test_tokenize_endpoint_rejects_invalid_input(body):
+    client, _, _ = make_api_client()
+    response = client.post("/api/tokenize", json=body)
+    assert response.status_code == 400
+
+
+def test_tokenize_endpoint_is_503_when_tokenizer_missing():
+    client, _, fake_detection = make_api_client()
+    fake_detection.next_error = ModelNotReadyError("no tokenizer")
+    response = client.post("/api/tokenize", json={"text": "こんにちは"})
+    assert response.status_code == 503
 
 
 def test_module_exports_asgi_app_with_test_only_environment():

@@ -11,7 +11,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.config import ServiceSettings
-from app.schemas import DetectRequest, DetectionResponse, GenerateRequest, HealthResponse
+from app.schemas import (
+    DetectRequest,
+    DetectionResponse,
+    GenerateRequest,
+    HealthResponse,
+    TokenizeRequest,
+    TokenizeResponse,
+)
 from app.services import (
     DetectionService,
     GenerationEvent,
@@ -95,6 +102,10 @@ def create_app(
             # first token (no previous token to form a bigram with).
             body.pop("tokens", None)
         return JSONResponse(content=body)
+
+    @app.post("/api/tokenize", response_model=TokenizeResponse)
+    def tokenize(payload: TokenizeRequest):
+        return detection.tokenize(payload.text)
 
     @app.post("/api/generate")
     def generate(payload: GenerateRequest):

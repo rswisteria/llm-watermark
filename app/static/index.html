@@ -177,14 +177,19 @@
         delete container.dataset.lastId;
       }
 
-      document.querySelectorAll('.view-toggle button').forEach((button) => button.addEventListener('click', () => {
-        const target = button.dataset.target;
-        const view = button.dataset.view;
-        document.querySelectorAll('.view-toggle button[data-target="' + target + '"]').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+      function applyView(target) {
+        const pressedButton = document.querySelector('.view-toggle button[data-target="' + target + '"][aria-pressed="true"]');
+        const view = pressedButton ? pressedButton.dataset.view : 'chips';
         const chips = document.getElementById(target === 'generate' ? 'generated-tokens' : 'detect-tokens');
         const text = document.getElementById(target === 'generate' ? 'generated-text' : 'detect-text-view');
         chips.hidden = view !== 'chips';
         text.hidden = view !== 'text';
+      }
+
+      document.querySelectorAll('.view-toggle button').forEach((button) => button.addEventListener('click', () => {
+        const target = button.dataset.target;
+        document.querySelectorAll('.view-toggle button[data-target="' + target + '"]').forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+        applyView(target);
       }));
 
       async function readSse(response, onEvent) {
@@ -246,6 +251,8 @@
         if (!text) return;
         detectButton.disabled = true;
         detectionResult.hidden = true;
+        resetTokenView(detectTokens);
+        detectTextView.textContent = '';
         try {
           const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, include_tokens: true }) });
           if (!response.ok) throw new Error('判定リクエストに失敗しました。');
@@ -253,7 +260,7 @@
           resetTokenView(detectTokens);
           renderTokenChips(detectTokens, detection.tokens || []);
           detectTextView.textContent = (detection.tokens || []).map((t) => t.text).join('');
-          detectTokens.hidden = false;
+          applyView('detect');
           const message = detection.verdict === 'inconclusive' ? 'テキストが短すぎて判定できません。' : verdictLabel(detection.verdict);
           showResult(detectionResult, message, detection, detection.verdict === 'watermarked' ? 'success' : '');
         } catch (error) { detectionResult.className = 'result error'; detectionResult.textContent = error.message; detectionResult.hidden = false; }

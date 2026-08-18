@@ -105,6 +105,11 @@
     .bar .raw { position: absolute; left: 0; top: 0; bottom: 0; background: #8b95a7; }
     .bar .boost { position: absolute; top: 0; bottom: 0; background: #087443; }
     .tok.selected { outline: 2px solid var(--brand); }
+    .toklist .tk { display: inline-block; margin: 2px 1px; padding: .1rem .3rem; border-radius: .3rem; background: #e9eef7; line-height: 1.3; white-space: pre; }
+    .toklist .tk:nth-child(even) { background: #d7e0f5; }
+    .toklist .tk small { display: block; color: var(--muted); font-size: .7rem; text-align: center; }
+    .toklist .tk.only-a { background: #ffd9d4; }
+    .toklist .tk.only-b { background: #d3f5df; }
   </style>
 </head>
 <body>
@@ -118,6 +123,7 @@
       <button class="tab" type="button" data-tab="detect" aria-selected="false" aria-controls="detect-panel">判定</button>
       <button class="tab" type="button" data-tab="compare" aria-selected="false" aria-controls="compare-panel">鍵比較</button>
       <button class="tab" type="button" data-tab="tamper" aria-selected="false" aria-controls="tamper-panel">改ざん実験</button>
+      <button class="tab" type="button" data-tab="tokenizer" aria-selected="false" aria-controls="tokenizer-panel">トークナイザー</button>
     </nav>
 
     <section id="generate-panel" class="panel" data-panel="generate">
@@ -235,6 +241,21 @@
         <svg id="tamper-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
         <div id="tamper-formula" class="formula"></div>
       </div>
+    </section>
+
+    <section id="tokenizer-panel" class="panel" data-panel="tokenizer" hidden>
+      <h2>トークナイザーを見る</h2>
+      <p class="intro">文章がどのようなトークンに分割され、どの ID になるかを表示します。テキスト B を入れると A との差分（変わったトークン）を色分けします。透かしの判定は「トークン列」に対して行われるため、分割が変わると判定にも影響します。</p>
+      <label for="tokenize-a">テキスト A</label>
+      <textarea id="tokenize-a" maxlength="10000" placeholder="例: 日本の四季は美しい。"></textarea>
+      <p class="legend" id="tokenize-a-count"></p>
+      <div id="tokenize-a-tokens" class="tokens toklist"></div>
+      <label for="tokenize-b">テキスト B（任意・比較用）</label>
+      <textarea id="tokenize-b" maxlength="10000" placeholder="A を少し書き換えた文章を入れると差分が分かります"></textarea>
+      <p class="legend" id="tokenize-b-count"></p>
+      <div id="tokenize-b-tokens" class="tokens toklist"></div>
+      <p class="legend" id="tokenize-diff"></p>
+      <p class="legend" id="tokenize-error"></p>
     </section>
   </main>
 
@@ -757,6 +778,77 @@
       generateTamperButton.addEventListener('click', () => {
         if (lastGeneration) sendToTamper({ text: lastGeneration.text, watermark: undefined, label: '生成タブ' });
       });
+
+      const tokenizeA = document.getElementById('tokenize-a');
+      const tokenizeB = document.getElementById('tokenize-b');
+      const tokenizeState = { a: null, b: null, seq: 0, timer: null };
+
+      async function tokenizeWith(text) {
+        const response = await fetch('/api/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+        if (!response.ok) throw new Error('トークン化に失敗しました。');
+        return response.json();
+      }
+
+      function lcsDiff(a, b) {           // a, b: id 配列 → {onlyA:Set<index>, onlyB:Set<index>, common:number}
+        const n = a.length, m = b.length;
+        if (n * m > 4_000_000) return null;
+        const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+        for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+          dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        const onlyA = new Set(), onlyB = new Set();
+        let i = 0, j = 0, common = 0;
+        while (i < n && j < m) {
+          if (a[i] === b[j]) { i++; j++; common++; }
+          else if (dp[i + 1][j] >= dp[i][j + 1]) { onlyA.add(i); i++; }
+          else { onlyB.add(j); j++; }
+        }
+        while (i < n) onlyA.add(i++);
+        while (j < m) onlyB.add(j++);
+        return { onlyA, onlyB, common };
+      }
+
+      function renderTokenList(container, tokens, onlySet, cls) {
+        container.innerHTML = tokens.map((t) =>
+          '<span class="tk' + (onlySet && onlySet.has(t.index) ? ' ' + cls : '') + '" title="ID ' + t.id + '">' +
+          escapeHtml(t.text === '' ? '·' : t.text) + '<small>' + t.id + '</small></span>').join('');
+      }
+
+      function renderTokenizer() {
+        const a = tokenizeState.a, b = tokenizeState.b;
+        document.getElementById('tokenize-a-count').textContent = a ? 'トークン数: ' + a.count : '';
+        document.getElementById('tokenize-b-count').textContent = b ? 'トークン数: ' + b.count : '';
+        const diffEl = document.getElementById('tokenize-diff');
+        if (a && b) {
+          const diff = lcsDiff(a.tokens.map((t) => t.id), b.tokens.map((t) => t.id));
+          if (diff) {
+            renderTokenList(document.getElementById('tokenize-a-tokens'), a.tokens, diff.onlyA, 'only-a');
+            renderTokenList(document.getElementById('tokenize-b-tokens'), b.tokens, diff.onlyB, 'only-b');
+            diffEl.textContent = '共通トークン ' + diff.common + ' / A のみ ' + diff.onlyA.size + ' / B のみ ' + diff.onlyB.size;
+            return;
+          }
+          diffEl.textContent = '長すぎるため差分は計算しません。';
+        } else diffEl.textContent = '';
+        renderTokenList(document.getElementById('tokenize-a-tokens'), a ? a.tokens : []);
+        renderTokenList(document.getElementById('tokenize-b-tokens'), b ? b.tokens : []);
+      }
+
+      async function runTokenize() {
+        const seq = ++tokenizeState.seq;
+        const ta = tokenizeA.value, tb = tokenizeB.value;
+        try {
+          const [ra, rb] = await Promise.all([ta.trim() ? tokenizeWith(ta) : null, tb.trim() ? tokenizeWith(tb) : null]);
+          if (seq !== tokenizeState.seq) return;
+          tokenizeState.a = ra; tokenizeState.b = rb;
+          document.getElementById('tokenize-error').textContent = '';
+          renderTokenizer();
+        } catch (error) {
+          if (seq !== tokenizeState.seq) return;
+          document.getElementById('tokenize-error').textContent = error.message;
+        }
+      }
+      function scheduleTokenize() { clearTimeout(tokenizeState.timer); tokenizeState.timer = setTimeout(runTokenize, 300); }
+      tokenizeA.addEventListener('input', scheduleTokenize);
+      tokenizeB.addEventListener('input', scheduleTokenize);
     })();
   </script>
 </body>

@@ -36,7 +36,7 @@ def test_documentation_provides_secret_free_environment_template():
         "WM_GAMMA=0.25",
         "WM_DELTA=2.0",
         "WM_Z_THRESHOLD=4.0",
-        "WM_MAX_NEW_TOKENS=400",
+        "WM_MAX_NEW_TOKENS=4096",
     ):
         assert required_default in env_lines
 
@@ -282,7 +282,22 @@ def test_generation_request_clamps_only_at_service_boundary():
     assert request.max_new_tokens == 999
     assert ServiceSettings.from_env({"WM_HASH_KEY": "12345"}).max_tokens(
         request.max_new_tokens
-    ) == 400
+    ) == 999
+    assert ServiceSettings.from_env({"WM_HASH_KEY": "12345"}).max_tokens(99999) == 4096
+    assert ServiceSettings.from_env(
+        {"WM_HASH_KEY": "12345", "WM_MAX_NEW_TOKENS": "8000"}
+    ).max_tokens(99999) == 8000
+
+
+def test_generation_request_without_max_new_tokens_uses_configured_maximum():
+    from app.schemas import GenerateRequest
+
+    request = GenerateRequest(prompt="test")
+
+    assert request.max_new_tokens is None
+    assert ServiceSettings.from_env(
+        {"WM_HASH_KEY": "12345", "WM_MAX_NEW_TOKENS": "4096"}
+    ).max_tokens(request.max_new_tokens) == 4096
 
 
 @pytest.mark.parametrize("max_new_tokens", [0, -1])
@@ -438,7 +453,23 @@ def test_generate_stream_contains_token_and_done_events():
     assert response.status_code == 200
     assert "event: token" in response.text
     assert "event: done" in response.text
-    assert fake_service.calls[-1]["max_new_tokens"] == 400
+    assert fake_service.calls[-1]["max_new_tokens"] == 999
+
+
+def test_generate_without_max_new_tokens_uses_configured_maximum():
+    client, fake_service, _ = make_api_client()
+    response = client.post("/api/generate", json={"prompt": "テスト"})
+    assert response.status_code == 200
+    assert fake_service.calls[-1]["max_new_tokens"] == 4096
+
+
+def test_generate_clamps_max_new_tokens_to_configured_maximum():
+    client, fake_service, _ = make_api_client()
+    response = client.post(
+        "/api/generate", json={"prompt": "テスト", "max_new_tokens": 99999}
+    )
+    assert response.status_code == 200
+    assert fake_service.calls[-1]["max_new_tokens"] == 4096
 
 
 def test_generate_stream_forwards_error_event_after_tokens():

@@ -35,7 +35,7 @@ The service binds only to `127.0.0.1` for local use. It has no authentication or
 
 The web service exposes these endpoints:
 
-- `POST /api/generate` accepts `prompt`, optional `max_new_tokens` (clamped to 1–400), and optional non-negative `seed`. It returns `text/event-stream`.
+- `POST /api/generate` accepts `prompt`, optional `max_new_tokens` (defaults to `WM_MAX_NEW_TOKENS`, clamped to 1–`WM_MAX_NEW_TOKENS`, which defaults to 4096), and optional non-negative `seed`. It returns `text/event-stream`.
 - `POST /api/detect` accepts `text` and returns synchronous JSON detection statistics. Text is limited to 10,000 characters.
 - `GET /api/health` returns model-loaded state and public watermark settings, but never the hash key.
 - `GET /` serves the browser UI.
@@ -64,7 +64,7 @@ The detector uses the tokenizer and watermark parameters only, not model weights
 
 ## CPU latency
 
-Generation is CPU-bound. SSE is used so the first token can normally begin displaying within a few seconds, while a request generating up to 200 tokens may take tens of seconds and completion is expected within 10 minutes. Detection performs tokenizer-only processing and is expected to complete within 1 second. Only one generation runs at a time; one additional request may wait, and further queued requests receive `429`.
+Generation is CPU-bound. SSE is used so the first token can normally begin displaying within a few seconds, while a request generating a few hundred tokens may take tens of seconds; generation normally ends at the model's end-of-sequence token, and `WM_MAX_NEW_TOKENS` (default 4096) is only a safety ceiling, so long answers can take many minutes on CPU. Detection performs tokenizer-only processing and is expected to complete within 1 second. Only one generation runs at a time; one additional request may wait, and further queued requests receive `429`.
 
 ## Limitations from SPECIFICATION.md
 

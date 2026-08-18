@@ -5,7 +5,7 @@ from pydantic import BaseModel, field_validator
 
 class GenerateRequest(BaseModel):
     prompt: str
-    max_new_tokens: int = 200
+    max_new_tokens: int | None = None
     seed: int | None = None
 
     @field_validator("prompt")
@@ -19,8 +19,8 @@ class GenerateRequest(BaseModel):
 
     @field_validator("max_new_tokens")
     @classmethod
-    def max_new_tokens_must_be_positive(cls, value: int) -> int:
-        if value < 1:
+    def max_new_tokens_must_be_positive(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
             raise ValueError("max_new_tokens must be at least 1")
         return value
 

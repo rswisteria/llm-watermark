@@ -51,6 +51,19 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
 
+    class InvalidWatermarkOverride(ValueError):
+        pass
+
+    def _resolve_watermark(override):
+        try:
+            return resolved_settings.watermark_config(override)
+        except ValueError:
+            raise InvalidWatermarkOverride() from None
+
+    @app.exception_handler(InvalidWatermarkOverride)
+    async def invalid_watermark_handler(request: Request, exc: InvalidWatermarkOverride):
+        return JSONResponse(status_code=400, content={"detail": "invalid request"})
+
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         return JSONResponse(status_code=400, content={"detail": "invalid request"})
@@ -70,7 +83,11 @@ def create_app(
 
     @app.post("/api/detect", response_model=DetectionResponse)
     async def detect(payload: DetectRequest):
-        result = detection.classify(payload.text, include_tokens=payload.include_tokens)
+        result = detection.classify(
+            payload.text,
+            include_tokens=payload.include_tokens,
+            config=_resolve_watermark(payload.watermark),
+        )
         body = result.model_dump(mode="json")
         if result.tokens is None:
             # Drop the top-level key only; response_model_exclude_none would also
@@ -85,6 +102,7 @@ def create_app(
             payload.prompt,
             resolved_settings.max_tokens(payload.max_new_tokens),
             payload.seed,
+            _resolve_watermark(payload.watermark),
         ))
         try:
             first = next(iterator)

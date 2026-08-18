@@ -428,8 +428,8 @@ class FakeApiDetectionService:
     def is_ready(self):
         return True
 
-    def classify(self, text, include_tokens=False):
-        self.calls.append((text, include_tokens))
+    def classify(self, text, include_tokens=False, config=None):
+        self.calls.append((text, include_tokens, config))
         if self.next_error:
             raise self.next_error
         from app.schemas import DetectionResponse, TokenDetail
@@ -463,8 +463,10 @@ class FakeApiGenerationService:
     def health(self):
         return True
 
-    def begin(self, prompt, max_new_tokens, seed):
-        self.calls.append({"prompt": prompt, "max_new_tokens": max_new_tokens, "seed": seed})
+    def begin(self, prompt, max_new_tokens, seed, config=None):
+        self.calls.append(
+            {"prompt": prompt, "max_new_tokens": max_new_tokens, "seed": seed, "config": config}
+        )
         if self.next_error:
             raise self.next_error
         yield GenerationEvent("token", {"text": "断片"})
@@ -502,6 +504,49 @@ def make_api_client():
         generation,
         detection,
     )
+
+
+def test_detect_endpoint_resolves_watermark_override():
+    client, _, fake_detection = make_api_client()
+    client.post(
+        "/api/detect",
+        json={"text": "十分に長いテキストです", "watermark": {"hash_key": 99, "gamma": 0.5}},
+    )
+    config = fake_detection.calls[-1][2]
+    assert config.hash_key == 99
+    assert config.gamma == 0.5
+    assert config.delta == 2.0          # サーバー既定
+    assert config.z_threshold == 4.0    # 上書き不可
+
+
+def test_detect_endpoint_without_watermark_passes_default_config():
+    client, _, fake_detection = make_api_client()
+    client.post("/api/detect", json={"text": "十分に長いテキストです"})
+    config = fake_detection.calls[-1][2]
+    assert config.hash_key == 17
+
+
+def test_generate_endpoint_resolves_watermark_override():
+    client, fake_service, _ = make_api_client()
+    response = client.post(
+        "/api/generate", json={"prompt": "テスト", "watermark": {"delta": 0}}
+    )
+    assert response.status_code == 200
+    config = fake_service.calls[-1]["config"]
+    assert config.delta == 0.0
+    assert config.hash_key == 17
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/detect", {"text": "十分に長いテキストです", "watermark": {"hash_key": 0}}),
+    ("/api/detect", {"text": "十分に長いテキストです", "watermark": {"gamma": 1.5}}),
+    ("/api/generate", {"prompt": "テスト", "watermark": {"delta": -1}}),
+])
+def test_invalid_watermark_override_is_400(path, body):
+    client, _, _ = make_api_client()
+    response = client.post(path, json=body)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid request"}
 
 
 def test_module_exports_asgi_app_with_test_only_environment():
@@ -567,7 +612,7 @@ def test_detect_endpoint_forwards_include_tokens():
     client, _, fake_detection = make_api_client()
     client.post("/api/detect", json={"text": "十分に長いテキストです"})
     client.post("/api/detect", json={"text": "十分に長いテキストです", "include_tokens": True})
-    assert fake_detection.calls[-2:] == [
+    assert [(c[0], c[1]) for c in fake_detection.calls[-2:]] == [
         ("十分に長いテキストです", False),
         ("十分に長いテキストです", True),
     ]

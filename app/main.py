@@ -11,7 +11,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.config import ServiceSettings
-from app.schemas import DetectRequest, DetectionResponse, GenerateRequest, HealthResponse
+from app.schemas import (
+    DetectRequest,
+    DetectionResponse,
+    GenerateRequest,
+    HealthResponse,
+    TokenizeRequest,
+    TokenizeResponse,
+)
 from app.services import (
     DetectionService,
     GenerationEvent,
@@ -96,6 +103,10 @@ def create_app(
             body.pop("tokens", None)
         return JSONResponse(content=body)
 
+    @app.post("/api/tokenize", response_model=TokenizeResponse)
+    def tokenize(payload: TokenizeRequest):
+        return detection.tokenize(payload.text)
+
     @app.post("/api/generate")
     def generate(payload: GenerateRequest):
         iterator = iter(generation.begin(
@@ -103,6 +114,7 @@ def create_app(
             resolved_settings.max_tokens(payload.max_new_tokens),
             payload.seed,
             _resolve_watermark(payload.watermark),
+            inspect=payload.inspect,
         ))
         try:
             first = next(iterator)

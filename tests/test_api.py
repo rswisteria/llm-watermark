@@ -104,6 +104,25 @@ class FakeModel:
         return torch.tensor([[1, 2, *self.continuation_ids]])
 
 
+class InspectableFakeModel(FakeModel):
+    """Calls each logits processor once per continuation token, like generate() would."""
+
+    def generate(self, input_ids, streamer, **kwargs):
+        self.last_generation = kwargs
+        processors = kwargs.get("logits_processor") or []
+        streamer.put(input_ids)
+        history = list(input_ids[0].tolist())
+        for token_id in self.continuation_ids:
+            scores = torch.zeros(1, 16)
+            scores[0, token_id] = 5.0
+            for processor in processors:
+                scores = processor(torch.tensor([history]), scores)
+            history.append(token_id)
+            streamer.put(torch.tensor([token_id]))
+        streamer.end()
+        return torch.tensor([[1, 2, *self.continuation_ids]])
+
+
 class QwenLikeModel(FakeModel):
     def generate(self, input_ids, streamer, **kwargs):
         if "enable_thinking" in kwargs:
@@ -122,6 +141,82 @@ def make_generation_service():
         tokenizer=tokenizer,
         model=model,
     ), model
+
+
+def make_inspectable_service(continuation_ids=None):
+    tokenizer = FakeTokenizer()
+    if continuation_ids is None:
+        # FakeModel's default range(3, 28) would overflow InspectableFakeModel's
+        # (1, 16) scores tensor, which is sized to FakeTokenizer's 16-token vocab.
+        continuation_ids = list(range(3, 15))
+    model = InspectableFakeModel(tokenizer, continuation_ids)
+    return GenerationService(
+        settings=ServiceSettings(hash_key=17), config=WatermarkConfig(hash_key=17),
+        tokenizer=tokenizer, model=model,
+    ), model
+
+
+def test_generation_without_inspect_has_null_steps():
+    service, model = make_inspectable_service()
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+    assert events[-1].payload["steps"] is None
+    assert "logits_processor" in model.last_generation
+
+
+def test_generation_with_inspect_returns_steps_aligned_with_tokens():
+    service, model = make_inspectable_service(continuation_ids=[*range(3, 12), 0])  # 0 は special
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None, inspect=True))
+    done = events[-1].payload
+    tokens = done["detection"]["tokens"]
+    steps = done["steps"]
+    assert steps is not None
+    assert len(steps) == len(tokens) == 9
+    for step, tok in zip(steps, tokens):
+        assert step["index"] == tok["index"]
+        assert step["chosen_id"] == tok["id"]
+        assert step["candidates"]
+        chosen = [c for c in step["candidates"] if c["id"] == tok["id"]]
+        assert chosen and chosen[0]["raw"] == pytest.approx(5.0)
+        assert all(set(c) == {"id", "text", "raw", "adjusted", "green", "prob"} for c in step["candidates"])
+    from app.inspection import InspectingProcessor
+    assert isinstance(model.last_generation["logits_processor"][0], InspectingProcessor)
+
+
+def test_generation_with_inspect_and_zero_delta_still_records():
+    service, model = make_inspectable_service()
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None,
+                                config=WatermarkConfig(hash_key=17, delta=0.0), inspect=True))
+    assert events[-1].payload["steps"] is not None
+    assert "logits_processor" in model.last_generation
+
+
+def test_generation_with_inspect_disables_steps_and_logs_when_recording_fails(monkeypatch, caplog):
+    from app.inspection import InspectingProcessor
+
+    def broken_record(self, index, input_ids, raw, adjusted):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(InspectingProcessor, "_record", broken_record)
+
+    service, model = make_inspectable_service()
+    with caplog.at_level(logging.ERROR, logger="app.inspection"):
+        events = list(service.begin("prompt", max_new_tokens=12, seed=None, inspect=True))
+
+    done = events[-1].payload
+    assert done["steps"] is None
+    assert done["detection"]["tokens"]
+    assert "logits_processor" in model.last_generation
+
+    assert any(
+        "candidate recording failed" in record.message for record in caplog.records
+    )
+
+
+def test_generate_endpoint_forwards_inspect_flag():
+    client, fake_service, _ = make_api_client()
+    client.post("/api/generate", json={"prompt": "テスト"})
+    client.post("/api/generate", json={"prompt": "テスト", "inspect": True})
+    assert [c["inspect"] for c in fake_service.calls[-2:]] == [False, True]
 
 
 def test_detection_service_returns_inconclusive_for_short_text():
@@ -165,6 +260,21 @@ def test_detection_service_short_text_with_tokens_is_inconclusive_and_has_pieces
     result = service.classify("x", include_tokens=True)
     assert result.verdict == "inconclusive"
     assert [t.text for t in result.tokens] == ["w3", "w4", "w5"]
+
+
+def test_detection_service_tokenize_returns_pieces():
+    service = DetectionService(tokenizer=PieceTokenizer([3, 4, 5]), config=WatermarkConfig(hash_key=17))
+    result = service.tokenize("x")
+    assert result.count == 3
+    assert [t.model_dump() for t in result.tokens] == [
+        {"index": 0, "id": 3, "text": "w3"}, {"index": 1, "id": 4, "text": "w4"}, {"index": 2, "id": 5, "text": "w5"},
+    ]
+
+
+def test_detection_service_tokenize_requires_tokenizer():
+    service = DetectionService(tokenizer=None, config=WatermarkConfig(hash_key=17))
+    with pytest.raises(ModelNotReadyError):
+        service.tokenize("x")
 
 
 def test_generation_service_emits_tokens_then_done(monkeypatch):
@@ -423,10 +533,18 @@ def test_generation_request_rejects_non_positive_max_new_tokens(max_new_tokens):
 class FakeApiDetectionService:
     def __init__(self):
         self.calls = []
+        self.tokenize_calls = []
         self.next_error = None
 
     def is_ready(self):
         return True
+
+    def tokenize(self, text):
+        self.tokenize_calls.append(text)
+        if self.next_error:
+            raise self.next_error
+        from app.schemas import TokenizeResponse, TokenizedToken
+        return TokenizeResponse(count=1, tokens=[TokenizedToken(index=0, id=1, text=text)])
 
     def classify(self, text, include_tokens=False, config=None):
         self.calls.append((text, include_tokens, config))
@@ -463,9 +581,15 @@ class FakeApiGenerationService:
     def health(self):
         return True
 
-    def begin(self, prompt, max_new_tokens, seed, config=None):
+    def begin(self, prompt, max_new_tokens, seed, config=None, inspect=False):
         self.calls.append(
-            {"prompt": prompt, "max_new_tokens": max_new_tokens, "seed": seed, "config": config}
+            {
+                "prompt": prompt,
+                "max_new_tokens": max_new_tokens,
+                "seed": seed,
+                "config": config,
+                "inspect": inspect,
+            }
         )
         if self.next_error:
             raise self.next_error
@@ -557,6 +681,28 @@ def test_detect_endpoint_rejects_unknown_watermark_field():
     )
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid request"}
+
+
+def test_tokenize_endpoint_forwards_text_and_returns_json():
+    client, _, fake_detection = make_api_client()
+    response = client.post("/api/tokenize", json={"text": "こんにちは"})
+    assert response.status_code == 200
+    assert response.json() == {"count": 1, "tokens": [{"index": 0, "id": 1, "text": "こんにちは"}]}
+    assert fake_detection.tokenize_calls == ["こんにちは"]
+
+
+@pytest.mark.parametrize("body", [{"text": ""}, {"text": "  "}, {"text": "あ" * 10001}, {}])
+def test_tokenize_endpoint_rejects_invalid_input(body):
+    client, _, _ = make_api_client()
+    response = client.post("/api/tokenize", json=body)
+    assert response.status_code == 400
+
+
+def test_tokenize_endpoint_is_503_when_tokenizer_missing():
+    client, _, fake_detection = make_api_client()
+    fake_detection.next_error = ModelNotReadyError("no tokenizer")
+    response = client.post("/api/tokenize", json={"text": "こんにちは"})
+    assert response.status_code == 503
 
 
 def test_module_exports_asgi_app_with_test_only_environment():

@@ -36,9 +36,11 @@ The service binds only to `127.0.0.1` for local use. It has no authentication or
 The web service exposes these endpoints:
 
 - `POST /api/generate` accepts `prompt`, optional `max_new_tokens` (defaults to `WM_MAX_NEW_TOKENS`, clamped to 1–`WM_MAX_NEW_TOKENS`, which defaults to 4096), and optional non-negative `seed`. It returns `text/event-stream`.
+- `POST /api/generate` accepts optional `inspect` (default `false`). When true, the `done` event also carries `steps`: for the first 400 generation steps (special tokens such as EOS consume a step), the candidate tokens (top 10 by raw logit ∪ top 10 by watermark-adjusted logit) with `raw`, `adjusted`, `green` and `prob` (softmax of adjusted/temperature over the whole vocabulary, before top-k/top-p). `steps[i]` corresponds to `detection.tokens[i]`.
 - `POST /api/detect` accepts `text` and returns synchronous JSON detection statistics. Text is limited to 10,000 characters.
 - `POST /api/detect` also accepts optional `include_tokens` (default `false`). When true, the response includes `tokens`, a per-token list of `{index, id, text, green, t, green_count, z}` where `green` is `null` for the unscored first token and `z` is the cumulative z-score after that token.
 - `GET /api/health` returns model-loaded state and public watermark settings, but never the hash key.
+- `POST /api/tokenize` accepts `text` (1–10,000 characters) and returns the token ids and display pieces produced by the service tokenizer; it needs only the tokenizer, not the model weights.
 - `GET /` serves the browser UI.
 
 Generation sends Server-Sent Events as text is produced. `token` events contain a text fragment, `done` contains `full_text` and the service's self-detection result, and `error` reports a safe generation error. Generation `token` events now contain `text` and `tokens` (same shape as above, for the tokens consumed since the previous event); the `done` event's `detection.tokens` lists every generated token.
@@ -60,6 +62,8 @@ Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) after starting uvicorn. Th
 Both tabs can show the result as Green/Red token chips (hover for token id, T and cumulative z), a z-score trajectory chart with the threshold line and the `T < 25` inconclusive band, and the z formula filled with the actual values.
 
 The 鍵比較 tab generates the same prompt and seed three times (server key, a second key, and no watermark), shows each lane's chips and z chart, and fills a 3×3 cross-detection matrix (rows are texts, columns are keys); click a cell to recolor that text under that key. The 改ざん実験 tab lets you edit a generated text and re-detects it after every change, showing the original and current z, verdict, and edit distance.
+
+On the 生成 tab, click a token chip after generation to open the logit inspector for that step. The トークナイザー tab shows how any text is split into tokens (with ids) and, given a second text, highlights the tokens that differ. Both the 生成 and 鍵比較 tabs offer low- and high-entropy prompt presets that illustrate when the watermark signal is weak or strong.
 
 ## Detection rules
 

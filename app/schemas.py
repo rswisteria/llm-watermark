@@ -22,6 +22,7 @@ class GenerateRequest(BaseModel):
     max_new_tokens: int | None = None
     seed: int | None = None
     watermark: WatermarkOverride | None = None
+    inspect: bool = False
 
     @field_validator("prompt")
     @classmethod
@@ -62,6 +63,30 @@ class DetectRequest(BaseModel):
         return value
 
 
+class TokenizeRequest(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be empty")
+        if len(value) > 10000:
+            raise ValueError("text must not exceed 10000 characters")
+        return value
+
+
+class TokenizedToken(BaseModel):
+    index: int
+    id: int
+    text: str
+
+
+class TokenizeResponse(BaseModel):
+    count: int
+    tokens: list[TokenizedToken]
+
+
 class TokenDetail(BaseModel):
     index: int
     id: int
@@ -80,6 +105,21 @@ class DetectionResponse(BaseModel):
     p_value: float
     threshold: float
     tokens: list[TokenDetail] | None = None
+
+
+class CandidateDetail(BaseModel):
+    id: int
+    text: str
+    raw: float
+    adjusted: float
+    green: bool
+    prob: float
+
+
+class StepInspection(BaseModel):
+    index: int
+    chosen_id: int
+    candidates: list[CandidateDetail]
 
 
 class HealthResponse(BaseModel):

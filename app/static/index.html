@@ -95,6 +95,23 @@
     .tamper-stats div { padding: .45rem .65rem; border: 1px solid #d7e0ef; border-radius: .4rem; background: #fff; }
     .tamper-stats dt { color: var(--muted); font-size: .82rem; }
     .tamper-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .inspector { margin-top: 1.25rem; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; }
+    .inspector h3 { margin: 0 0 .3rem; font-size: 1rem; }
+    .cand { display: grid; grid-template-columns: 8rem 1fr 4.5rem 4.5rem 4rem; gap: .5rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eef1f6; font-variant-numeric: tabular-nums; font-size: .9rem; }
+    .cand.head { color: var(--muted); font-size: .8rem; }
+    .cand.chosen { background: #fff8e6; }
+    .cand .tokcell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    .bar { position: relative; height: 12px; background: #eef1f6; border-radius: 3px; overflow: hidden; }
+    .bar .raw { position: absolute; left: 0; top: 0; bottom: 0; background: #8b95a7; }
+    .bar .boost { position: absolute; top: 0; bottom: 0; background: #087443; }
+    .tok.selected { outline: 2px solid var(--brand); }
+    .toklist .tk { display: inline-block; margin: 2px 1px; padding: .1rem .3rem; border-radius: .3rem; background: #e9eef7; line-height: 1.3; white-space: pre; }
+    .toklist .tk:nth-child(even) { background: #d7e0f5; }
+    .toklist .tk small { display: block; color: var(--muted); font-size: .7rem; text-align: center; }
+    .toklist .tk.only-a { background: #ffd9d4; }
+    .toklist .tk.only-b { background: #d3f5df; }
+    .preset-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
+    .preset-row select { padding: .3rem .4rem; border: 1px solid #aeb9c9; border-radius: .4rem; font: inherit; }
   </style>
 </head>
 <body>
@@ -108,10 +125,15 @@
       <button class="tab" type="button" data-tab="detect" aria-selected="false" aria-controls="detect-panel">判定</button>
       <button class="tab" type="button" data-tab="compare" aria-selected="false" aria-controls="compare-panel">鍵比較</button>
       <button class="tab" type="button" data-tab="tamper" aria-selected="false" aria-controls="tamper-panel">改ざん実験</button>
+      <button class="tab" type="button" data-tab="tokenizer" aria-selected="false" aria-controls="tokenizer-panel">トークナイザー</button>
     </nav>
 
     <section id="generate-panel" class="panel" data-panel="generate">
       <h2>透かし付きで生成</h2>
+      <div class="preset-row">
+        <label>プリセット <select class="preset-select" data-target="prompt"><option value="">（選択）</option></select></label>
+        <span class="legend preset-hint"></span>
+      </div>
       <label for="prompt">プロンプト</label>
       <textarea id="prompt" maxlength="2000" placeholder="生成したい文章のテーマを入力してください"></textarea>
       <button id="generate-button" class="primary" type="button">透かし付きで生成</button>
@@ -122,6 +144,11 @@
       <div id="generated-tokens" class="tokens" aria-live="polite"></div>
       <p class="legend"><span class="tok green">Green</span> <span class="tok red">Red</span> <span class="tok unscored">未採点（先頭）</span> — ホバーで前トークンID・T・累積 z を表示</p>
       <pre id="generated-text" aria-live="polite" hidden></pre>
+      <div id="inspector" class="inspector" hidden>
+        <h3 id="inspector-title">ステップの候補</h3>
+        <p class="legend">チップをクリックすると、そのトークンを選ぶ直前の候補（元 logit 上位 10 ∪ 補正後上位 10）を表示します。確率は temperature 0.7 適用後の softmax（top-p 0.8 / top-k 20 の打ち切り前）。</p>
+        <div id="inspector-body"></div>
+      </div>
       <div class="viz">
         <svg id="generate-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
         <div id="generate-formula" class="formula"></div>
@@ -151,6 +178,10 @@
     <section id="compare-panel" class="panel" data-panel="compare" hidden>
       <h2>鍵を変えて比較する</h2>
       <p class="intro">同じプロンプト・seed で「鍵A / 鍵B / 透かしなし」を順に生成し、各文章を各鍵で判定します。別の鍵で見ると Green 比率が γ に戻り、透かしは検出できません。</p>
+      <div class="preset-row">
+        <label>プリセット <select class="preset-select" data-target="compare-prompt"><option value="">（選択）</option></select></label>
+        <span class="legend preset-hint"></span>
+      </div>
       <label for="compare-prompt">プロンプト</label>
       <textarea id="compare-prompt" maxlength="2000" placeholder="例: 日本の四季について、それぞれの特徴を段落ごとに説明してください。"></textarea>
       <div class="compare-controls">
@@ -221,6 +252,21 @@
         <div id="tamper-formula" class="formula"></div>
       </div>
     </section>
+
+    <section id="tokenizer-panel" class="panel" data-panel="tokenizer" hidden>
+      <h2>トークナイザーを見る</h2>
+      <p class="intro">文章がどのようなトークンに分割され、どの ID になるかを表示します。テキスト B を入れると A との差分（変わったトークン）を色分けします。透かしの判定は「トークン列」に対して行われるため、分割が変わると判定にも影響します。</p>
+      <label for="tokenize-a">テキスト A</label>
+      <textarea id="tokenize-a" maxlength="10000" placeholder="例: 日本の四季は美しい。"></textarea>
+      <p class="legend" id="tokenize-a-count"></p>
+      <div id="tokenize-a-tokens" class="tokens toklist"></div>
+      <label for="tokenize-b">テキスト B（任意・比較用）</label>
+      <textarea id="tokenize-b" maxlength="10000" placeholder="A を少し書き換えた文章を入れると差分が分かります"></textarea>
+      <p class="legend" id="tokenize-b-count"></p>
+      <div id="tokenize-b-tokens" class="tokens toklist"></div>
+      <p class="legend" id="tokenize-diff"></p>
+      <p class="legend" id="tokenize-error"></p>
+    </section>
   </main>
 
   <script>
@@ -240,10 +286,14 @@
       const detectChart = document.getElementById('detect-chart');
       const detectFormula = document.getElementById('detect-formula');
       const generateTamperButton = document.getElementById('generate-tamper');
+      const inspector = document.getElementById('inspector');
+      const inspectorTitle = document.getElementById('inspector-title');
+      const inspectorBody = document.getElementById('inspector-body');
+      let lastSteps = null;   // 生成ハンドラの done で payload.steps を保存、開始時に null
 
-      let settings = { gamma: 0.25, z_threshold: 4.0 };
+      let settings = { gamma: 0.25, z_threshold: 4.0, delta: null };
       fetch('/api/health').then((r) => r.json()).then((h) => {
-        settings = { gamma: h.gamma, z_threshold: h.z_threshold };
+        settings = { gamma: h.gamma, z_threshold: h.z_threshold, delta: h.delta };
         document.querySelectorAll('.lane-gamma').forEach((i) => { i.value = h.gamma; });
         document.querySelectorAll('.lane-delta').forEach((i) => { i.value = h.delta; });
       }).catch(() => {});
@@ -327,7 +377,7 @@
         const title = (tok.green === null ? '' : ('前トークン ' + tok.prev_id_label + ' → ')) +
           'ID ' + tok.id + ' / ' + label + ' / T=' + tok.t + ' / g=' + tok.green_count + ' / z=' + Number(tok.z).toFixed(3);
         const text = tok.text === '' ? '·' : tok.text;
-        return '<span class="tok ' + cls + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
+        return '<span class="tok ' + cls + '" data-index="' + tok.index + '" title="' + escapeHtml(title) + '">' + escapeHtml(text) + '</span>';
       }
 
       function renderTokenChips(container, tokens) {
@@ -345,6 +395,51 @@
         container.innerHTML = '';
         delete container.dataset.lastId;
       }
+
+      function renderInspector(step) {
+        if (!step) {
+          inspectorTitle.textContent = 'このステップは記録されていません（先頭 400 ステップのみ）';
+          inspectorBody.innerHTML = '';
+          inspector.hidden = false;
+          return;
+        }
+        const cands = step.candidates.slice();
+        inspectorTitle.textContent = 'ステップ ' + step.index + ' の候補（選ばれたトークン: ID ' + step.chosen_id + '）';
+        if (!cands.length) {
+          inspectorBody.innerHTML = '<p class="legend">候補がありません。</p>';
+          inspector.hidden = false;
+          return;
+        }
+        const min = Math.min(...cands.map((c) => Math.min(c.raw, c.adjusted)));
+        const max = Math.max(...cands.map((c) => Math.max(c.raw, c.adjusted)));
+        const span = (max - min) || 1;
+        const pct = (v) => (((v - min) / span) * 100).toFixed(1) + '%';
+        let html = '<div class="cand head"><span>候補</span><span>logit（灰: 元、緑: +δ）</span><span>元</span><span>補正後</span><span>確率</span></div>';
+        cands.forEach((c) => {
+          const chosen = c.id === step.chosen_id ? ' chosen' : '';
+          const boostLeft = pct(Math.min(c.raw, c.adjusted));
+          const boostWidth = (((Math.abs(c.adjusted - c.raw)) / span) * 100).toFixed(1) + '%';
+          html += '<div class="cand' + chosen + '">' +
+            '<span class="tokcell">' + escapeHtml(c.text === '' ? '·' : c.text) + ' <span class="muted">#' + c.id + '</span>' + (c.green ? ' <span class="tok green">G</span>' : '') + '</span>' +
+            '<span class="bar"><span class="raw" style="width:' + pct(c.raw) + '"></span>' + (c.green && c.adjusted !== c.raw ? '<span class="boost" style="left:' + boostLeft + ';width:' + boostWidth + '"></span>' : '') + '</span>' +
+            '<span>' + c.raw.toFixed(2) + '</span><span>' + c.adjusted.toFixed(2) + '</span><span>' + (c.prob * 100).toFixed(1) + '%</span></div>';
+        });
+        if (!cands.some((c) => c.id === step.chosen_id)) {
+          html += '<p class="legend">選ばれたトークン（ID ' + escapeHtml(String(Number(step.chosen_id))) +
+            '）は記録候補（元上位 10 ∪ 補正後上位 10）の外です。top-k 20 サンプリングでは 11〜20 位が選ばれることがあります。</p>';
+        }
+        inspectorBody.innerHTML = html;
+        inspector.hidden = false;
+      }
+
+      generatedTokens.addEventListener('click', (ev) => {
+        const chip = ev.target.closest('.tok[data-index]');
+        if (!chip || !lastSteps) return;
+        generatedTokens.querySelectorAll('.tok.selected').forEach((el) => el.classList.remove('selected'));
+        chip.classList.add('selected');
+        const index = Number(chip.dataset.index);
+        renderInspector(lastSteps.find((s) => s.index === index) || null);
+      });
 
       function applyView(target) {
         const pressedButton = document.querySelector('.view-toggle button[data-target="' + target + '"][aria-pressed="true"]');
@@ -397,11 +492,13 @@
         resetTokenView(generatedTokens);
         generationResult.hidden = true;
         generateTamperButton.hidden = true;
+        lastSteps = null;
+        inspector.hidden = true;
         let liveTokens = [];
         renderZChart(generateChart, liveTokens, settings.z_threshold);
         generateFormula.innerHTML = '';
         try {
-          const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+          const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, inspect: true }) });
           await readSse(response, (event, payload) => {
             if (event === 'token') {
               generatedText.textContent += payload.text || '';
@@ -418,6 +515,8 @@
               showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
               lastGeneration = { text: payload.full_text };
               generateTamperButton.hidden = false;
+              lastSteps = payload.steps || null;
+              generatedTokens.title = lastSteps ? 'チップをクリックすると候補を表示' : '';
             }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });
@@ -694,6 +793,104 @@
       let lastGeneration = null;   // 生成ハンドラの done で {text: payload.full_text} を保存し generateTamperButton.hidden = false にする
       generateTamperButton.addEventListener('click', () => {
         if (lastGeneration) sendToTamper({ text: lastGeneration.text, watermark: undefined, label: '生成タブ' });
+      });
+
+      const tokenizeA = document.getElementById('tokenize-a');
+      const tokenizeB = document.getElementById('tokenize-b');
+      const tokenizeState = { a: null, b: null, seq: 0, timer: null };
+
+      async function tokenizeWith(text) {
+        const response = await fetch('/api/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+        if (!response.ok) throw new Error('トークン化に失敗しました。');
+        return response.json();
+      }
+
+      function lcsDiff(a, b) {           // a, b: id 配列 → {onlyA:Set<index>, onlyB:Set<index>, common:number}
+        const n = a.length, m = b.length;
+        if (n * m > 4_000_000) return null;
+        const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+        for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+          dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        const onlyA = new Set(), onlyB = new Set();
+        let i = 0, j = 0, common = 0;
+        while (i < n && j < m) {
+          if (a[i] === b[j]) { i++; j++; common++; }
+          else if (dp[i + 1][j] >= dp[i][j + 1]) { onlyA.add(i); i++; }
+          else { onlyB.add(j); j++; }
+        }
+        while (i < n) onlyA.add(i++);
+        while (j < m) onlyB.add(j++);
+        return { onlyA, onlyB, common };
+      }
+
+      function renderTokenList(container, tokens, onlySet, cls) {
+        container.innerHTML = tokens.map((t) =>
+          '<span class="tk' + (onlySet && onlySet.has(t.index) ? ' ' + cls : '') + '" title="ID ' + t.id + '">' +
+          escapeHtml(t.text === '' ? '·' : t.text) + '<small>' + t.id + '</small></span>').join('');
+      }
+
+      function renderTokenizer() {
+        const a = tokenizeState.a, b = tokenizeState.b;
+        document.getElementById('tokenize-a-count').textContent = a ? 'トークン数: ' + a.count : '';
+        document.getElementById('tokenize-b-count').textContent = b ? 'トークン数: ' + b.count : '';
+        const diffEl = document.getElementById('tokenize-diff');
+        if (a && b) {
+          const diff = lcsDiff(a.tokens.map((t) => t.id), b.tokens.map((t) => t.id));
+          if (diff) {
+            renderTokenList(document.getElementById('tokenize-a-tokens'), a.tokens, diff.onlyA, 'only-a');
+            renderTokenList(document.getElementById('tokenize-b-tokens'), b.tokens, diff.onlyB, 'only-b');
+            diffEl.textContent = '共通トークン ' + diff.common + ' / A のみ ' + diff.onlyA.size + ' / B のみ ' + diff.onlyB.size;
+            return;
+          }
+          diffEl.textContent = '長すぎるため差分は計算しません。';
+        } else diffEl.textContent = '';
+        renderTokenList(document.getElementById('tokenize-a-tokens'), a ? a.tokens : []);
+        renderTokenList(document.getElementById('tokenize-b-tokens'), b ? b.tokens : []);
+      }
+
+      async function runTokenize() {
+        const seq = ++tokenizeState.seq;
+        const ta = tokenizeA.value, tb = tokenizeB.value;
+        try {
+          const [ra, rb] = await Promise.all([ta.trim() ? tokenizeWith(ta) : null, tb.trim() ? tokenizeWith(tb) : null]);
+          if (seq !== tokenizeState.seq) return;
+          tokenizeState.a = ra; tokenizeState.b = rb;
+          document.getElementById('tokenize-error').textContent = '';
+          renderTokenizer();
+        } catch (error) {
+          if (seq !== tokenizeState.seq) return;
+          document.getElementById('tokenize-error').textContent = error.message;
+        }
+      }
+      function scheduleTokenize() { clearTimeout(tokenizeState.timer); tokenizeState.timer = setTimeout(runTokenize, 300); }
+      tokenizeA.addEventListener('input', scheduleTokenize);
+      tokenizeB.addEventListener('input', scheduleTokenize);
+
+      const PRESETS = [
+        { group: '低エントロピー（z が伸びにくい）', hint: '定型的な出力では次のトークンがほぼ決まっていて Green を選ぶ余地がなく、z が伸びにくい', items: [
+          '1 から 100 まで数字を改行区切りで書いてください。',
+          'Python で FizzBuzz を書いてください。',
+          '五十音（あいうえお…）を順に、間に空白を入れて書いてください。',
+        ] },
+        { group: '高エントロピー（z が伸びやすい）', hint: '自由度が高い文章では Green を選びやすく、z が伸びやすい', items: [
+          '架空の街を舞台にした短い物語を 400 字程度で書いてください。',
+          '日本の四季それぞれの魅力を段落ごとに説明してください。',
+          '旅行の計画の立て方について、初心者向けにアドバイスしてください。',
+        ] },
+      ];
+      document.querySelectorAll('.preset-select').forEach((select) => {
+        PRESETS.forEach((g, gi) => {
+          const og = document.createElement('optgroup'); og.label = g.group;
+          g.items.forEach((p, pi) => { const o = document.createElement('option'); o.value = gi + ':' + pi; o.textContent = p; og.appendChild(o); });
+          select.appendChild(og);
+        });
+        select.addEventListener('change', () => {
+          const hint = select.parentElement.parentElement.querySelector('.preset-hint');
+          if (!select.value) { hint.textContent = ''; return; }
+          const [gi, pi] = select.value.split(':').map(Number);
+          document.getElementById(select.dataset.target).value = PRESETS[gi].items[pi];
+          hint.textContent = PRESETS[gi].hint;
+        });
       });
     })();
   </script>

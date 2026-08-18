@@ -75,7 +75,6 @@
     .chart .threshold { stroke: var(--danger); stroke-dasharray: 4 3; }
     .chart .inconclusive { fill: #f2f4f8; }
     .formula { padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95rem; }
-    .formula .muted { color: var(--muted); }
     .compare-controls, .lane-params { display: flex; gap: 1rem; flex-wrap: wrap; margin: .5rem 0; }
     .compare-controls label, .lane-params label { display: flex; align-items: center; gap: .35rem; font-weight: 600; }
     .compare-controls input, .lane-params input { width: 9rem; padding: .3rem .4rem; border: 1px solid #aeb9c9; border-radius: .4rem; font: inherit; }
@@ -153,7 +152,7 @@
       <h2>鍵を変えて比較する</h2>
       <p class="intro">同じプロンプト・seed で「鍵A / 鍵B / 透かしなし」を順に生成し、各文章を各鍵で判定します。別の鍵で見ると Green 比率が γ に戻り、透かしは検出できません。</p>
       <label for="compare-prompt">プロンプト</label>
-      <textarea id="compare-prompt" maxlength="2000" placeholder="例: 日本の四季について短く説明してください。"></textarea>
+      <textarea id="compare-prompt" maxlength="2000" placeholder="例: 日本の四季について、それぞれの特徴を段落ごとに説明してください。"></textarea>
       <div class="compare-controls">
         <label>seed <input id="compare-seed" type="number" min="0" step="1"></label>
         <label>max_new_tokens <input id="compare-max-tokens" type="number" min="1" step="1" value="150"></label>
@@ -204,12 +203,12 @@
       <h2>文章を書き換えて透かしが消える様子を見る</h2>
       <p class="intro">生成タブ・鍵比較タブの「この文章で改ざん実験」から持ち込むか、下に貼り付けてください。編集するたびに z を再計算します。</p>
       <p id="tamper-source" class="legend">持ち込み元: なし（既定鍵で判定）</p>
-      <div class="tamper-stats" id="tamper-stats" hidden>
+      <dl class="tamper-stats" id="tamper-stats" hidden>
         <div><dt>元の z</dt><dd id="tamper-z0">-</dd></div>
         <div><dt>現在の z</dt><dd id="tamper-z1">-</dd></div>
         <div><dt>判定</dt><dd id="tamper-verdict">-</dd></div>
         <div><dt>編集文字数</dt><dd id="tamper-dist">-</dd></div>
-      </div>
+      </dl>
       <label for="tamper-text">文章（編集できます）</label>
       <textarea id="tamper-text" maxlength="10000" placeholder="ここに文章を貼り付けるか、他のタブから持ち込んでください"></textarea>
       <div class="compare-controls">
@@ -604,7 +603,7 @@
         if (typeof sendToTamper === 'function') sendToTamper({ text: lane.text, watermark: detectOverride(lane), label: LANE_LABELS[lane.index] });
       }));
 
-      const tamper = { original: '', watermark: undefined, originalDetection: null, seq: 0, timer: null };
+      const tamper = { original: '', watermark: undefined, originalDetection: null, seq: 0, timer: null, inFlight: false, pending: false };
       const tamperText = document.getElementById('tamper-text');
       const tamperTokens = document.getElementById('tamper-tokens');
       const tamperChart = document.getElementById('tamper-chart');
@@ -645,9 +644,11 @@
       }
 
       async function runTamperDetect() {
+        if (tamper.inFlight) { tamper.seq++; tamper.pending = true; return; }  // 飛行中の応答を無効化しつつ次を投げず、完了後に最新テキストで再実行
         const text = tamperText.value.trim();
         if (!text) { tamper.seq++; tamperError.textContent = ''; tamperStats.hidden = true; resetTokenView(tamperTokens); renderZChart(tamperChart, [], settings.z_threshold); tamperFormula.innerHTML = ''; return; }
         const seq = ++tamper.seq;
+        tamper.inFlight = true;
         try {
           const det = await detectWith(text, tamper.watermark);
           if (seq !== tamper.seq) return;           // 古い応答は捨てる
@@ -658,6 +659,12 @@
         } catch (error) {
           if (seq !== tamper.seq) return;
           tamperError.textContent = error.message;   // 前回の表示は残す
+        } finally {
+          tamper.inFlight = false;
+          if (tamper.pending) {
+            tamper.pending = false;
+            runTamperDetect();                       // 飛行中に来た最新テキストで即再実行
+          }
         }
       }
 

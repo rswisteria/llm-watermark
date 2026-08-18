@@ -549,6 +549,16 @@ def test_invalid_watermark_override_is_400(path, body):
     assert response.json() == {"detail": "invalid request"}
 
 
+def test_detect_endpoint_rejects_unknown_watermark_field():
+    client, _, _ = make_api_client()
+    response = client.post(
+        "/api/detect",
+        json={"text": "十分に長いテキストです", "watermark": {"gama": 0.5}},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid request"}
+
+
 def test_module_exports_asgi_app_with_test_only_environment():
     import app.main as main
     from fastapi import FastAPI
@@ -748,6 +758,8 @@ def test_static_page_exposes_tabs_and_service_only_warning():
     assert response.headers["content-type"].startswith("text/html")
     assert "生成" in response.text
     assert "判定" in response.text
+    assert "鍵比較" in response.text
+    assert "改ざん実験" in response.text
     assert "本サービスで生成されたテキストのみ判定可能(一般的なAI生成判定器ではない)" in response.text
     assert "同一トークナイザー・同一キーが必要です。" in response.text
 

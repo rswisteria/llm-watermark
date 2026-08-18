@@ -82,7 +82,7 @@ def create_app(
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     @app.post("/api/detect", response_model=DetectionResponse)
-    async def detect(payload: DetectRequest):
+    def detect(payload: DetectRequest):
         result = detection.classify(
             payload.text,
             include_tokens=payload.include_tokens,

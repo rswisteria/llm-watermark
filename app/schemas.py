@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class WatermarkOverride(BaseModel):
@@ -9,6 +9,8 @@ class WatermarkOverride(BaseModel):
     Missing values fall back to the server settings; validation happens in
     WatermarkConfig so the rules stay in one place.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     hash_key: int | None = None
     gamma: float | None = None

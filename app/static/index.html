@@ -81,6 +81,13 @@
     .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
     .lane { padding: .75rem; border: 1px solid var(--line); border-radius: .7rem; background: #fafbfe; }
     .lane h3 { margin: 0 0 .4rem; font-size: 1rem; }
+    .param-help { margin: .5rem 0 1rem; padding: .6rem .9rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; }
+    .param-help summary { cursor: pointer; font-weight: 650; }
+    .param-help dl { margin: .6rem 0 0; }
+    .param-help dt { margin-top: .6rem; font-weight: 650; }
+    .param-help dd { margin: .2rem 0 0; color: var(--ink); }
+    .param-help dd + dd { margin-top: .15rem; }
+    .param-help code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: #f4f7fb; padding: 0 .25rem; border-radius: .25rem; }
     .lane .tokens { min-height: 5rem; font-size: .9rem; }
     .lane .chart { height: 160px; margin-top: .5rem; }
     .lane.active { outline: 2px solid var(--brand); }
@@ -178,6 +185,21 @@
     <section id="compare-panel" class="panel" data-panel="compare" hidden>
       <h2>鍵を変えて比較する</h2>
       <p class="intro">同じプロンプト・seed で「鍵A / 鍵B / 透かしなし」を順に生成し、各文章を各鍵で判定します。別の鍵で見ると Green 比率が γ に戻り、透かしは検出できません。</p>
+      <details class="param-help">
+        <summary>γ（ガンマ）と δ（デルタ）とは？</summary>
+        <dl>
+          <dt>γ（Green リストの割合、0 &lt; γ &lt; 1、既定 0.25）</dt>
+          <dd>各ステップで「直前のトークン ID × 鍵」からシードを作り、語彙全体をシャッフルして先頭 <code>γ × 語彙数</code> 個を Green リストにします。γ = 0.25 なら語彙の 25 % が Green です。</dd>
+          <dd>判定側は「Green トークンの割合が γ より有意に高いか」を z 検定で見ます: <code>z = (g − γT) / √(γ(1−γ)T)</code>。透かしなしの文章や別の鍵で見た文章では Green 比率が γ 付近に戻り、z ≈ 0 になります。</dd>
+          <dd>γ を小さくすると Green が「珍しい」事象になり、1 トークンあたりの証拠は強くなりますが、モデルが Green を選べる余地が減ります。大きくすると逆です。生成と判定で同じ γ を使う必要があります。</dd>
+          <dt>δ（Green への logit 加算量、δ ≥ 0、既定 2.0）</dt>
+          <dd>生成時、Green リストのトークンの logit（確率になる前のスコア）に δ を足してから確率化します。δ が大きいほど Green が選ばれやすくなり、透かしは強く（z が伸びやすく）なりますが、本来の分布から離れるため文章の自然さが下がります。</dd>
+          <dd>δ = 0 は「透かしなし」です（このタブの 3 レーン目）。次のトークンがほぼ決まっている定型的な文（数え上げなど）では、δ を足しても Green を選ぶ余地がなく z は伸びにくくなります。</dd>
+          <dd>δ は生成にだけ効き、判定には使いません。判定は「鍵と γ」だけで Green を再計算します。</dd>
+          <dt>このタブでの使い方</dt>
+          <dd>鍵A と鍵B で γ・δ を変えて生成し、相互検出マトリクスで「自分の鍵では z が高く、別の鍵では γ 付近に戻る」ことと、δ の大小で z の伸びと文章の質がどう変わるかを見比べてください。生成タブのチップをクリックすると、各ステップで δ が logit にどう足されたかを確認できます。</dd>
+        </dl>
+      </details>
       <div class="preset-row">
         <label>プリセット <select class="preset-select" data-target="compare-prompt"><option value="">（選択）</option></select></label>
         <span class="legend preset-hint"></span>
@@ -192,8 +214,8 @@
         <div class="lane" data-lane="0">
           <h3>鍵A（サーバー既定）</h3>
           <div class="lane-params">
-            <label>γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
-            <label>δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
+            <label title="Green リストの割合（0〜1）。判定にも使う">γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
+            <label title="Green の logit に足す量（0 で透かしなし）。生成にだけ効く">δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
           </div>
           <div class="tokens lane-tokens"></div>
           <svg class="chart lane-chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
@@ -204,8 +226,8 @@
           <h3>鍵B</h3>
           <div class="lane-params">
             <label>鍵 <input class="lane-key" type="number" min="1" step="1"></label>
-            <label>γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
-            <label>δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
+            <label title="Green リストの割合（0〜1）。判定にも使う">γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
+            <label title="Green の logit に足す量（0 で透かしなし）。生成にだけ効く">δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
           </div>
           <div class="tokens lane-tokens"></div>
           <svg class="chart lane-chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>

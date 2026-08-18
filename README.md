@@ -36,10 +36,10 @@ The service binds only to `127.0.0.1` for local use. It has no authentication or
 The web service exposes these endpoints:
 
 - `POST /api/generate` accepts `prompt`, optional `max_new_tokens` (defaults to `WM_MAX_NEW_TOKENS`, clamped to 1–`WM_MAX_NEW_TOKENS`, which defaults to 4096), and optional non-negative `seed`. It returns `text/event-stream`.
+- `POST /api/generate` accepts optional `inspect` (default `false`). When true, the `done` event also carries `steps`: for the first 400 generation steps (special tokens such as EOS consume a step), the candidate tokens (top 10 by raw logit ∪ top 10 by watermark-adjusted logit) with `raw`, `adjusted`, `green` and `prob` (softmax of adjusted/temperature over the whole vocabulary, before top-k/top-p). `steps[i]` corresponds to `detection.tokens[i]`.
 - `POST /api/detect` accepts `text` and returns synchronous JSON detection statistics. Text is limited to 10,000 characters.
 - `POST /api/detect` also accepts optional `include_tokens` (default `false`). When true, the response includes `tokens`, a per-token list of `{index, id, text, green, t, green_count, z}` where `green` is `null` for the unscored first token and `z` is the cumulative z-score after that token.
 - `GET /api/health` returns model-loaded state and public watermark settings, but never the hash key.
-- `POST /api/generate` accepts optional `inspect` (default `false`). When true, the `done` event also carries `steps`: for each of the first 400 generated tokens, the candidate tokens (top 10 by raw logit ∪ top 10 by watermark-adjusted logit) with `raw`, `adjusted`, `green` and `prob` (softmax of adjusted/temperature over the whole vocabulary, before top-k/top-p). `steps[i]` corresponds to `detection.tokens[i]`.
 - `POST /api/tokenize` accepts `text` (1–10,000 characters) and returns the token ids and display pieces produced by the service tokenizer; it needs only the tokenizer, not the model weights.
 - `GET /` serves the browser UI.
 

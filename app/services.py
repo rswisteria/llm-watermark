@@ -115,6 +115,13 @@ def _build_steps(records, generated_ids, special_ids, tokenizer) -> list[dict]:
     (e.g. EOS) are dropped from both sides so steps[i] matches detection.tokens[i].
     """
     steps: list[dict] = []
+    piece_cache: dict[int, str] = {}
+
+    def _piece(candidate_id: int) -> str:
+        if candidate_id not in piece_cache:
+            piece_cache[candidate_id] = token_pieces(tokenizer, [candidate_id])[0]
+        return piece_cache[candidate_id]
+
     index = 0
     for k, token_id in enumerate(generated_ids):
         token_id = int(token_id)
@@ -124,7 +131,7 @@ def _build_steps(records, generated_ids, special_ids, tokenizer) -> list[dict]:
             record = records[k]
             candidates = [
                 CandidateDetail(
-                    id=c.id, text=token_pieces(tokenizer, [c.id])[0], raw=c.raw,
+                    id=c.id, text=_piece(c.id), raw=c.raw,
                     adjusted=c.adjusted, green=c.green, prob=c.prob,
                 )
                 for c in record.candidates
@@ -355,7 +362,7 @@ class GenerationService:
                 tokenizer=self.tokenizer, include_tokens=True,
             )
             steps = None
-            if inspector is not None:
+            if inspector is not None and not inspector.broken:
                 try:
                     steps = _build_steps(
                         inspector.records, output_ids[prompt_length:], special_ids, self.tokenizer

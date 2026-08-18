@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import torch
 from transformers import LogitsProcessor
 
 from watermark import WatermarkLogitsProcessor
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,15 +48,20 @@ class InspectingProcessor(LogitsProcessor):
         self.top_n = top_n
         self.max_steps = max_steps
         self.records: list[StepRecord] = []
+        self.broken = False
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        raw = scores[0].detach().clone()
         adjusted_scores = self.inner(input_ids, scores)
-        if len(self.records) < self.max_steps:
+        if not self.broken and len(self.records) < self.max_steps:
             try:
+                raw = scores[0].detach().clone()
                 self.records.append(self._record(len(self.records), input_ids, raw, adjusted_scores[0]))
             except Exception:  # recording must never break generation
-                pass
+                logger.exception(
+                    "candidate recording failed; disabling inspection for this generation"
+                )
+                self.broken = True
+                self.records.clear()
         return adjusted_scores
 
     def _record(self, index: int, input_ids, raw: torch.Tensor, adjusted: torch.Tensor) -> StepRecord:
@@ -67,13 +75,14 @@ class InspectingProcessor(LogitsProcessor):
                 ids.append(i)
         probs = torch.softmax(adj_v / self.temperature, dim=-1)
         previous_id = int(input_ids[0, -1].item())
-        green_ids = set(self.inner.generator.green_list(previous_id).tolist())
+        green_mask = torch.zeros(vocab, dtype=torch.bool)
+        green_mask[self.inner.generator.green_list(previous_id)] = True
         candidates = [
             Candidate(
                 id=i,
                 raw=float(raw_v[i]),
                 adjusted=float(adj_v[i]),
-                green=i in green_ids,
+                green=bool(green_mask[i]),
                 prob=float(probs[i]),
             )
             for i in ids

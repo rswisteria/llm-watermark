@@ -190,6 +190,28 @@ def test_generation_with_inspect_and_zero_delta_still_records():
     assert "logits_processor" in model.last_generation
 
 
+def test_generation_with_inspect_disables_steps_and_logs_when_recording_fails(monkeypatch, caplog):
+    from app.inspection import InspectingProcessor
+
+    def broken_record(self, index, input_ids, raw, adjusted):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(InspectingProcessor, "_record", broken_record)
+
+    service, model = make_inspectable_service()
+    with caplog.at_level(logging.ERROR, logger="app.inspection"):
+        events = list(service.begin("prompt", max_new_tokens=12, seed=None, inspect=True))
+
+    done = events[-1].payload
+    assert done["steps"] is None
+    assert done["detection"]["tokens"]
+    assert "logits_processor" in model.last_generation
+
+    assert any(
+        "candidate recording failed" in record.message for record in caplog.records
+    )
+
+
 def test_generate_endpoint_forwards_inspect_flag():
     client, fake_service, _ = make_api_client()
     client.post("/api/generate", json={"prompt": "テスト"})

@@ -290,7 +290,6 @@
       const inspectorTitle = document.getElementById('inspector-title');
       const inspectorBody = document.getElementById('inspector-body');
       let lastSteps = null;   // 生成ハンドラの done で payload.steps を保存、開始時に null
-      let lastDelta = null;   // done で settings.delta（/api/health の delta を settings に追加）
 
       let settings = { gamma: 0.25, z_threshold: 4.0, delta: null };
       fetch('/api/health').then((r) => r.json()).then((h) => {
@@ -397,7 +396,7 @@
         delete container.dataset.lastId;
       }
 
-      function renderInspector(step, delta) {
+      function renderInspector(step) {
         if (!step) {
           inspectorTitle.textContent = 'このステップは記録されていません（先頭 400 ステップのみ）';
           inspectorBody.innerHTML = '';
@@ -405,11 +404,16 @@
           return;
         }
         const cands = step.candidates.slice();
+        inspectorTitle.textContent = 'ステップ ' + step.index + ' の候補（選ばれたトークン: ID ' + step.chosen_id + '）';
+        if (!cands.length) {
+          inspectorBody.innerHTML = '<p class="legend">候補がありません。</p>';
+          inspector.hidden = false;
+          return;
+        }
         const min = Math.min(...cands.map((c) => Math.min(c.raw, c.adjusted)));
         const max = Math.max(...cands.map((c) => Math.max(c.raw, c.adjusted)));
         const span = (max - min) || 1;
         const pct = (v) => (((v - min) / span) * 100).toFixed(1) + '%';
-        inspectorTitle.textContent = 'ステップ ' + step.index + ' の候補（選ばれたトークン: ID ' + step.chosen_id + '）';
         let html = '<div class="cand head"><span>候補</span><span>logit（灰: 元、緑: +δ）</span><span>元</span><span>補正後</span><span>確率</span></div>';
         cands.forEach((c) => {
           const chosen = c.id === step.chosen_id ? ' chosen' : '';
@@ -420,6 +424,10 @@
             '<span class="bar"><span class="raw" style="width:' + pct(c.raw) + '"></span>' + (c.green && c.adjusted !== c.raw ? '<span class="boost" style="left:' + boostLeft + ';width:' + boostWidth + '"></span>' : '') + '</span>' +
             '<span>' + c.raw.toFixed(2) + '</span><span>' + c.adjusted.toFixed(2) + '</span><span>' + (c.prob * 100).toFixed(1) + '%</span></div>';
         });
+        if (!cands.some((c) => c.id === step.chosen_id)) {
+          html += '<p class="legend">選ばれたトークン（ID ' + escapeHtml(String(Number(step.chosen_id))) +
+            '）は記録候補（元上位 10 ∪ 補正後上位 10）の外です。top-k 20 サンプリングでは 11〜20 位が選ばれることがあります。</p>';
+        }
         inspectorBody.innerHTML = html;
         inspector.hidden = false;
       }
@@ -430,7 +438,7 @@
         generatedTokens.querySelectorAll('.tok.selected').forEach((el) => el.classList.remove('selected'));
         chip.classList.add('selected');
         const index = Number(chip.dataset.index);
-        renderInspector(lastSteps.find((s) => s.index === index) || null, lastDelta);
+        renderInspector(lastSteps.find((s) => s.index === index) || null);
       });
 
       function applyView(target) {
@@ -485,7 +493,6 @@
         generationResult.hidden = true;
         generateTamperButton.hidden = true;
         lastSteps = null;
-        lastDelta = null;
         inspector.hidden = true;
         let liveTokens = [];
         renderZChart(generateChart, liveTokens, settings.z_threshold);
@@ -509,7 +516,6 @@
               lastGeneration = { text: payload.full_text };
               generateTamperButton.hidden = false;
               lastSteps = payload.steps || null;
-              lastDelta = settings.delta;
               generatedTokens.title = lastSteps ? 'チップをクリックすると候補を表示' : '';
             }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
@@ -879,9 +885,9 @@
           select.appendChild(og);
         });
         select.addEventListener('change', () => {
-          const [gi, pi] = select.value.split(':').map(Number);
           const hint = select.parentElement.parentElement.querySelector('.preset-hint');
-          if (Number.isNaN(gi)) { hint.textContent = ''; return; }
+          if (!select.value) { hint.textContent = ''; return; }
+          const [gi, pi] = select.value.split(':').map(Number);
           document.getElementById(select.dataset.target).value = PRESETS[gi].items[pi];
           hint.textContent = PRESETS[gi].hint;
         });

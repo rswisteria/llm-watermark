@@ -104,6 +104,25 @@ class FakeModel:
         return torch.tensor([[1, 2, *self.continuation_ids]])
 
 
+class InspectableFakeModel(FakeModel):
+    """Calls each logits processor once per continuation token, like generate() would."""
+
+    def generate(self, input_ids, streamer, **kwargs):
+        self.last_generation = kwargs
+        processors = kwargs.get("logits_processor") or []
+        streamer.put(input_ids)
+        history = list(input_ids[0].tolist())
+        for token_id in self.continuation_ids:
+            scores = torch.zeros(1, 16)
+            scores[0, token_id] = 5.0
+            for processor in processors:
+                scores = processor(torch.tensor([history]), scores)
+            history.append(token_id)
+            streamer.put(torch.tensor([token_id]))
+        streamer.end()
+        return torch.tensor([[1, 2, *self.continuation_ids]])
+
+
 class QwenLikeModel(FakeModel):
     def generate(self, input_ids, streamer, **kwargs):
         if "enable_thinking" in kwargs:
@@ -122,6 +141,60 @@ def make_generation_service():
         tokenizer=tokenizer,
         model=model,
     ), model
+
+
+def make_inspectable_service(continuation_ids=None):
+    tokenizer = FakeTokenizer()
+    if continuation_ids is None:
+        # FakeModel's default range(3, 28) would overflow InspectableFakeModel's
+        # (1, 16) scores tensor, which is sized to FakeTokenizer's 16-token vocab.
+        continuation_ids = list(range(3, 15))
+    model = InspectableFakeModel(tokenizer, continuation_ids)
+    return GenerationService(
+        settings=ServiceSettings(hash_key=17), config=WatermarkConfig(hash_key=17),
+        tokenizer=tokenizer, model=model,
+    ), model
+
+
+def test_generation_without_inspect_has_null_steps():
+    service, model = make_inspectable_service()
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+    assert events[-1].payload["steps"] is None
+    assert "logits_processor" in model.last_generation
+
+
+def test_generation_with_inspect_returns_steps_aligned_with_tokens():
+    service, model = make_inspectable_service(continuation_ids=[*range(3, 12), 0])  # 0 は special
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None, inspect=True))
+    done = events[-1].payload
+    tokens = done["detection"]["tokens"]
+    steps = done["steps"]
+    assert steps is not None
+    assert len(steps) == len(tokens) == 9
+    for step, tok in zip(steps, tokens):
+        assert step["index"] == tok["index"]
+        assert step["chosen_id"] == tok["id"]
+        assert step["candidates"]
+        chosen = [c for c in step["candidates"] if c["id"] == tok["id"]]
+        assert chosen and chosen[0]["raw"] == pytest.approx(5.0)
+        assert all(set(c) == {"id", "text", "raw", "adjusted", "green", "prob"} for c in step["candidates"])
+    from app.inspection import InspectingProcessor
+    assert isinstance(model.last_generation["logits_processor"][0], InspectingProcessor)
+
+
+def test_generation_with_inspect_and_zero_delta_still_records():
+    service, model = make_inspectable_service()
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None,
+                                config=WatermarkConfig(hash_key=17, delta=0.0), inspect=True))
+    assert events[-1].payload["steps"] is not None
+    assert "logits_processor" in model.last_generation
+
+
+def test_generate_endpoint_forwards_inspect_flag():
+    client, fake_service, _ = make_api_client()
+    client.post("/api/generate", json={"prompt": "テスト"})
+    client.post("/api/generate", json={"prompt": "テスト", "inspect": True})
+    assert [c["inspect"] for c in fake_service.calls[-2:]] == [False, True]
 
 
 def test_detection_service_returns_inconclusive_for_short_text():
@@ -463,9 +536,15 @@ class FakeApiGenerationService:
     def health(self):
         return True
 
-    def begin(self, prompt, max_new_tokens, seed, config=None):
+    def begin(self, prompt, max_new_tokens, seed, config=None, inspect=False):
         self.calls.append(
-            {"prompt": prompt, "max_new_tokens": max_new_tokens, "seed": seed, "config": config}
+            {
+                "prompt": prompt,
+                "max_new_tokens": max_new_tokens,
+                "seed": seed,
+                "config": config,
+                "inspect": inspect,
+            }
         )
         if self.next_error:
             raise self.next_error

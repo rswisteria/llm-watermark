@@ -22,6 +22,7 @@ class GenerateRequest(BaseModel):
     max_new_tokens: int | None = None
     seed: int | None = None
     watermark: WatermarkOverride | None = None
+    inspect: bool = False
 
     @field_validator("prompt")
     @classmethod
@@ -80,6 +81,21 @@ class DetectionResponse(BaseModel):
     p_value: float
     threshold: float
     tokens: list[TokenDetail] | None = None
+
+
+class CandidateDetail(BaseModel):
+    id: int
+    text: str
+    raw: float
+    adjusted: float
+    green: bool
+    prob: float
+
+
+class StepInspection(BaseModel):
+    index: int
+    chosen_id: int
+    candidates: list[CandidateDetail]
 
 
 class HealthResponse(BaseModel):

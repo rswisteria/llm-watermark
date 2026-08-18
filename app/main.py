@@ -103,6 +103,7 @@ def create_app(
             resolved_settings.max_tokens(payload.max_new_tokens),
             payload.seed,
             _resolve_watermark(payload.watermark),
+            inspect=payload.inspect,
         ))
         try:
             first = next(iterator)

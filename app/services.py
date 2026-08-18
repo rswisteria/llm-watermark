@@ -13,7 +13,8 @@ from transformers import (
 )
 
 from app.config import ServiceSettings
-from app.schemas import DetectionResponse, TokenDetail
+from app.inspection import InspectingProcessor
+from app.schemas import CandidateDetail, DetectionResponse, StepInspection, TokenDetail
 from app.streaming import IdRecordingStreamer
 from app.token_pieces import TokenPieceBuilder, token_pieces
 from watermark import (
@@ -98,6 +99,32 @@ def _steps_to_tokens(steps: list[DetectionStep], pieces: list[str]) -> list[Toke
         )
         for step, piece in zip(steps, pieces)
     ]
+
+
+def _build_steps(records, generated_ids, special_ids, tokenizer) -> list[dict]:
+    """Align per-step records with non-special generated tokens.
+
+    records[k] was captured before generated_ids[k] was sampled. Special tokens
+    (e.g. EOS) are dropped from both sides so steps[i] matches detection.tokens[i].
+    """
+    steps: list[dict] = []
+    index = 0
+    for k, token_id in enumerate(generated_ids):
+        token_id = int(token_id)
+        if token_id in special_ids:
+            continue
+        if k < len(records):
+            record = records[k]
+            candidates = [
+                CandidateDetail(
+                    id=c.id, text=token_pieces(tokenizer, [c.id])[0], raw=c.raw,
+                    adjusted=c.adjusted, green=c.green, prob=c.prob,
+                )
+                for c in record.candidates
+            ]
+            steps.append(StepInspection(index=index, chosen_id=token_id, candidates=candidates).model_dump())
+        index += 1
+    return steps
 
 
 def _classify_token_ids(
@@ -203,19 +230,25 @@ class GenerationService:
         max_new_tokens: int,
         seed: int | None,
         config: WatermarkConfig | None = None,
+        inspect: bool = False,
     ) -> Iterator[GenerationEvent]:
         if not self.health():
             raise ModelNotReadyError("model is not ready")
         lease = self.reserve_slot()
         self._generation.acquire()
         try:
-            yield from self._generate(prompt, max_new_tokens, seed, config or self.config)
+            yield from self._generate(prompt, max_new_tokens, seed, config or self.config, inspect)
         finally:
             self._generation.release()
             lease.release()
 
     def _generate(
-        self, prompt: str, max_new_tokens: int, seed: int | None, config: WatermarkConfig
+        self,
+        prompt: str,
+        max_new_tokens: int,
+        seed: int | None,
+        config: WatermarkConfig,
+        inspect: bool = False,
     ) -> Iterator[GenerationEvent]:
         apply_chat_template = getattr(self.tokenizer, "apply_chat_template", None)
         if apply_chat_template is not None:
@@ -234,8 +267,10 @@ class GenerationService:
             skip_special_tokens=True,
         )
         result_holder: dict = {}
+        inspector: InspectingProcessor | None = None
 
         def worker() -> None:
+            nonlocal inspector
             try:
                 if seed is not None:
                     torch.manual_seed(seed)
@@ -246,7 +281,12 @@ class GenerationService:
                     top_p=0.8,
                     top_k=20,
                 )
-                if config.delta > 0:
+                if inspect:
+                    inspector = InspectingProcessor(
+                        WatermarkLogitsProcessor(len(self.tokenizer), config), temperature=0.7
+                    )
+                    generate_kwargs["logits_processor"] = LogitsProcessorList([inspector])
+                elif config.delta > 0:
                     generate_kwargs["logits_processor"] = LogitsProcessorList(
                         [WatermarkLogitsProcessor(len(self.tokenizer), config)]
                     )
@@ -297,10 +337,19 @@ class GenerationService:
                 token_ids, vocab_size, config,
                 tokenizer=self.tokenizer, include_tokens=True,
             )
+            steps = None
+            if inspector is not None:
+                try:
+                    steps = _build_steps(
+                        inspector.records, output_ids[prompt_length:], special_ids, self.tokenizer
+                    )
+                except Exception:
+                    logger.exception("logit inspection failed; continuing without steps")
+                    steps = None
         except Exception:
             yield GenerationEvent("error", {"message": "generation failed"})
             return
         yield GenerationEvent(
             "done",
-            {"full_text": full_text, "detection": response.model_dump()},
+            {"full_text": full_text, "detection": response.model_dump(), "steps": steps},
         )

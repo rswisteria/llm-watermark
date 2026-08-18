@@ -75,7 +75,26 @@
     .chart .threshold { stroke: var(--danger); stroke-dasharray: 4 3; }
     .chart .inconclusive { fill: #f2f4f8; }
     .formula { padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .55rem; background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95rem; }
-    .formula .muted { color: var(--muted); }
+    .compare-controls, .lane-params { display: flex; gap: 1rem; flex-wrap: wrap; margin: .5rem 0; }
+    .compare-controls label, .lane-params label { display: flex; align-items: center; gap: .35rem; font-weight: 600; }
+    .compare-controls input, .lane-params input { width: 9rem; padding: .3rem .4rem; border: 1px solid #aeb9c9; border-radius: .4rem; font: inherit; }
+    .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
+    .lane { padding: .75rem; border: 1px solid var(--line); border-radius: .7rem; background: #fafbfe; }
+    .lane h3 { margin: 0 0 .4rem; font-size: 1rem; }
+    .lane .tokens { min-height: 5rem; font-size: .9rem; }
+    .lane .chart { height: 160px; margin-top: .5rem; }
+    .lane.active { outline: 2px solid var(--brand); }
+    .matrix { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+    .matrix th, .matrix td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: center; }
+    .matrix td button { width: 100%; background: #fff; border: 0; padding: .3rem; cursor: pointer; }
+    .matrix td.selected button { background: #dfe8ff; }
+    .matrix .wm { color: var(--success); font-weight: 650; }
+    .matrix .nowm { color: var(--danger); }
+    .muted { color: var(--muted); }
+    .tamper-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .65rem; margin: .5rem 0 1rem; }
+    .tamper-stats div { padding: .45rem .65rem; border: 1px solid #d7e0ef; border-radius: .4rem; background: #fff; }
+    .tamper-stats dt { color: var(--muted); font-size: .82rem; }
+    .tamper-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -87,6 +106,8 @@
     <nav class="tabs" aria-label="機能">
       <button class="tab" type="button" data-tab="generate" aria-selected="true" aria-controls="generate-panel">生成</button>
       <button class="tab" type="button" data-tab="detect" aria-selected="false" aria-controls="detect-panel">判定</button>
+      <button class="tab" type="button" data-tab="compare" aria-selected="false" aria-controls="compare-panel">鍵比較</button>
+      <button class="tab" type="button" data-tab="tamper" aria-selected="false" aria-controls="tamper-panel">改ざん実験</button>
     </nav>
 
     <section id="generate-panel" class="panel" data-panel="generate">
@@ -106,6 +127,7 @@
         <div id="generate-formula" class="formula"></div>
       </div>
       <output id="generation-result" class="result" aria-live="polite" hidden></output>
+      <button id="generate-tamper" class="tab" type="button" hidden>この文章で改ざん実験</button>
     </section>
 
     <section id="detect-panel" class="panel" data-panel="detect" hidden>
@@ -125,6 +147,80 @@
       </div>
       <output id="detection-result" class="result" aria-live="polite" hidden></output>
     </section>
+
+    <section id="compare-panel" class="panel" data-panel="compare" hidden>
+      <h2>鍵を変えて比較する</h2>
+      <p class="intro">同じプロンプト・seed で「鍵A / 鍵B / 透かしなし」を順に生成し、各文章を各鍵で判定します。別の鍵で見ると Green 比率が γ に戻り、透かしは検出できません。</p>
+      <label for="compare-prompt">プロンプト</label>
+      <textarea id="compare-prompt" maxlength="2000" placeholder="例: 日本の四季について、それぞれの特徴を段落ごとに説明してください。"></textarea>
+      <div class="compare-controls">
+        <label>seed <input id="compare-seed" type="number" min="0" step="1"></label>
+        <label>max_new_tokens <input id="compare-max-tokens" type="number" min="1" step="1" value="150"></label>
+      </div>
+      <div class="lanes" id="lanes">
+        <div class="lane" data-lane="0">
+          <h3>鍵A（サーバー既定）</h3>
+          <div class="lane-params">
+            <label>γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
+            <label>δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
+          </div>
+          <div class="tokens lane-tokens"></div>
+          <svg class="chart lane-chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+          <output class="result lane-result" hidden></output>
+          <button class="lane-tamper" type="button" hidden>この文章で改ざん実験</button>
+        </div>
+        <div class="lane" data-lane="1">
+          <h3>鍵B</h3>
+          <div class="lane-params">
+            <label>鍵 <input class="lane-key" type="number" min="1" step="1"></label>
+            <label>γ <input class="lane-gamma" type="number" min="0.01" max="0.99" step="0.01"></label>
+            <label>δ <input class="lane-delta" type="number" min="0" step="0.1"></label>
+          </div>
+          <div class="tokens lane-tokens"></div>
+          <svg class="chart lane-chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+          <output class="result lane-result" hidden></output>
+          <button class="lane-tamper" type="button" hidden>この文章で改ざん実験</button>
+        </div>
+        <div class="lane" data-lane="2">
+          <h3>透かしなし（δ = 0）</h3>
+          <div class="lane-params"><span class="muted">既定鍵で判定します</span></div>
+          <div class="tokens lane-tokens"></div>
+          <svg class="chart lane-chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+          <output class="result lane-result" hidden></output>
+          <button class="lane-tamper" type="button" hidden>この文章で改ざん実験</button>
+        </div>
+      </div>
+      <button id="compare-button" class="primary" type="button">3 レーンを順に生成</button>
+      <p id="compare-status" class="legend"></p>
+      <div id="matrix-wrap" hidden>
+        <h3>相互検出マトリクス（行 = 文章、列 = 判定に使う鍵）</h3>
+        <table id="matrix" class="matrix"></table>
+        <p class="legend">セルをクリックすると、その文章をその鍵で着色して上のレーンに表示します。</p>
+      </div>
+    </section>
+
+    <section id="tamper-panel" class="panel" data-panel="tamper" hidden>
+      <h2>文章を書き換えて透かしが消える様子を見る</h2>
+      <p class="intro">生成タブ・鍵比較タブの「この文章で改ざん実験」から持ち込むか、下に貼り付けてください。編集するたびに z を再計算します。</p>
+      <p id="tamper-source" class="legend">持ち込み元: なし（既定鍵で判定）</p>
+      <dl class="tamper-stats" id="tamper-stats" hidden>
+        <div><dt>元の z</dt><dd id="tamper-z0">-</dd></div>
+        <div><dt>現在の z</dt><dd id="tamper-z1">-</dd></div>
+        <div><dt>判定</dt><dd id="tamper-verdict">-</dd></div>
+        <div><dt>編集文字数</dt><dd id="tamper-dist">-</dd></div>
+      </dl>
+      <label for="tamper-text">文章（編集できます）</label>
+      <textarea id="tamper-text" maxlength="10000" placeholder="ここに文章を貼り付けるか、他のタブから持ち込んでください"></textarea>
+      <div class="compare-controls">
+        <button id="tamper-reset" class="tab" type="button">元に戻す</button>
+        <span id="tamper-error" class="muted"></span>
+      </div>
+      <div id="tamper-tokens" class="tokens"></div>
+      <div class="viz">
+        <svg id="tamper-chart" class="chart" viewBox="0 0 640 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="z 値の推移"></svg>
+        <div id="tamper-formula" class="formula"></div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -143,9 +239,14 @@
       const generateFormula = document.getElementById('generate-formula');
       const detectChart = document.getElementById('detect-chart');
       const detectFormula = document.getElementById('detect-formula');
+      const generateTamperButton = document.getElementById('generate-tamper');
 
       let settings = { gamma: 0.25, z_threshold: 4.0 };
-      fetch('/api/health').then((r) => r.json()).then((h) => { settings = { gamma: h.gamma, z_threshold: h.z_threshold }; }).catch(() => {});
+      fetch('/api/health').then((r) => r.json()).then((h) => {
+        settings = { gamma: h.gamma, z_threshold: h.z_threshold };
+        document.querySelectorAll('.lane-gamma').forEach((i) => { i.value = h.gamma; });
+        document.querySelectorAll('.lane-delta').forEach((i) => { i.value = h.delta; });
+      }).catch(() => {});
 
       const MIN_T = 25;
 
@@ -190,11 +291,12 @@
           '<div>p = ½·erfc(z/√2) = ' + Number(detection.p_value).toExponential(3) + '　　判定: z &gt; ' + detection.threshold + ' かつ T ≥ ' + MIN_T + ' で「透かしあり」</div>';
       }
 
-      tabs.forEach((tab) => tab.addEventListener('click', () => {
-        const selected = tab.dataset.tab;
-        tabs.forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
-        panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== selected; });
-      }));
+      function activateTab(name) {
+        tabs.forEach((item) => item.setAttribute('aria-selected', String(item.dataset.tab === name)));
+        panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== name; });
+      }
+
+      tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tab)));
 
       function statsMarkup(detection) {
         return '<dl class="stats">' +
@@ -294,6 +396,7 @@
         generatedText.textContent = '';
         resetTokenView(generatedTokens);
         generationResult.hidden = true;
+        generateTamperButton.hidden = true;
         let liveTokens = [];
         renderZChart(generateChart, liveTokens, settings.z_threshold);
         generateFormula.innerHTML = '';
@@ -313,6 +416,8 @@
               renderZChart(generateChart, payload.detection.tokens || [], payload.detection.threshold);
               renderFormula(generateFormula, payload.detection, settings.gamma);
               showResult(generationResult, '生成完了: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+              lastGeneration = { text: payload.full_text };
+              generateTamperButton.hidden = false;
             }
             if (event === 'error') { generationResult.className = 'result error'; generationResult.textContent = payload.message || '生成中にエラーが発生しました。'; generationResult.hidden = false; }
           });
@@ -343,6 +448,252 @@
           showResult(detectionResult, message, detection, detection.verdict === 'watermarked' ? 'success' : '');
         } catch (error) { detectionResult.className = 'result error'; detectionResult.textContent = error.message; detectionResult.hidden = false; }
         finally { detectButton.disabled = false; }
+      });
+
+      document.getElementById('compare-seed').value = Math.floor(Math.random() * 1e9);
+      document.querySelectorAll('.lane-key').forEach((i) => { i.value = Math.floor(Math.random() * 8_000_000_000) + 1; });
+
+      const lanes = Array.from(document.querySelectorAll('#lanes .lane')).map((el, i) => ({
+        el, index: i,
+        tokensEl: el.querySelector('.lane-tokens'),
+        chartEl: el.querySelector('.lane-chart'),
+        resultEl: el.querySelector('.lane-result'),
+        tamperBtn: el.querySelector('.lane-tamper'),
+        text: '', tokens: [], detection: null, cross: {}, watermark: undefined,
+      }));
+      const compareButton = document.getElementById('compare-button');
+      const compareStatus = document.getElementById('compare-status');
+      const matrixWrap = document.getElementById('matrix-wrap');
+      const matrix = document.getElementById('matrix');
+      const LANE_LABELS = ['鍵A（既定）', '鍵B', '透かしなし'];
+
+      function laneOverride(lane) {
+        const el = lane.el;
+        const wm = {};
+        const key = el.querySelector('.lane-key');
+        const gamma = el.querySelector('.lane-gamma');
+        const delta = el.querySelector('.lane-delta');
+        if (key && key.value !== '') wm.hash_key = Number(key.value);
+        if (gamma && gamma.value !== '') wm.gamma = Number(gamma.value);
+        if (delta && delta.value !== '') wm.delta = Number(delta.value);
+        if (lane.index === 2) wm.delta = 0;
+        return Object.keys(wm).length ? wm : undefined;
+      }
+
+      // 判定用: 「透かしなし」レーンの列は既定鍵（delta を除いた設定）で判定する
+      function detectOverride(lane) {
+        const wm = Object.assign({}, lane.watermark || {});
+        delete wm.delta;
+        return Object.keys(wm).length ? wm : undefined;
+      }
+
+      async function generateLane(lane, prompt, seed, maxTokens) {
+        lane.text = ''; lane.tokens = []; lane.detection = null; lane.cross = {};
+        resetTokenView(lane.tokensEl);
+        renderZChart(lane.chartEl, [], settings.z_threshold);
+        lane.resultEl.hidden = true;
+        lane.tamperBtn.hidden = true;
+        lane.el.classList.add('active');
+        const body = { prompt, seed, max_new_tokens: maxTokens };
+        if (lane.watermark) body.watermark = lane.watermark;
+        try {
+          const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          await readSse(response, (event, payload) => {
+            if (event === 'token') {
+              lane.text += payload.text || '';
+              lane.tokens.push(...(payload.tokens || []));
+              renderTokenChips(lane.tokensEl, payload.tokens || []);
+              renderZChart(lane.chartEl, lane.tokens, settings.z_threshold);
+            }
+            if (event === 'done') {
+              lane.text = payload.full_text;
+              lane.tokens = payload.detection.tokens || [];
+              lane.detection = payload.detection;
+              resetTokenView(lane.tokensEl);
+              renderTokenChips(lane.tokensEl, lane.tokens);
+              renderZChart(lane.chartEl, lane.tokens, payload.detection.threshold);
+              showResult(lane.resultEl, '自己判定: ' + verdictLabel(payload.detection.verdict), payload.detection, payload.detection.verdict === 'watermarked' ? 'success' : '');
+              lane.tamperBtn.hidden = typeof sendToTamper !== 'function';
+            }
+            if (event === 'error') { lane.resultEl.className = 'result error'; lane.resultEl.textContent = payload.message || '生成中にエラーが発生しました。'; lane.resultEl.hidden = false; }
+          });
+        } catch (error) {
+          lane.resultEl.className = 'result error'; lane.resultEl.textContent = error.message; lane.resultEl.hidden = false;
+        } finally {
+          lane.el.classList.remove('active');
+        }
+      }
+
+      async function detectWith(text, watermark) {
+        const body = { text, include_tokens: true };
+        if (watermark) body.watermark = watermark;
+        const response = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!response.ok) throw new Error('判定リクエストに失敗しました。');
+        return response.json();
+      }
+
+      function matrixCell(det) {
+        if (!det) return '<span class="muted">—</span>';
+        const cls = det.verdict === 'watermarked' ? 'wm' : (det.verdict === 'not_watermarked' ? 'nowm' : 'muted');
+        return '<span class="' + cls + '">z=' + Number(det.z_score).toFixed(2) + '<br>' + escapeHtml(verdictLabel(det.verdict)) + '</span>';
+      }
+
+      function renderMatrix() {
+        let html = '<thead><tr><th>文章 ＼ 鍵</th>' + LANE_LABELS.map((l, i) => '<th>' + escapeHtml(i === 2 ? '既定鍵' : l) + '</th>').join('') + '</tr></thead><tbody>';
+        lanes.forEach((row) => {
+          html += '<tr><th>' + escapeHtml(LANE_LABELS[row.index] + ' の文章') + '</th>';
+          lanes.forEach((col) => {
+            const det = row.cross[col.index];
+            const selected = row.selectedCol === col.index ? ' class="selected"' : '';
+            html += '<td' + selected + '><button type="button" data-row="' + row.index + '" data-col="' + col.index + '"' + (det ? '' : ' disabled') + '>' + matrixCell(det) + '</button></td>';
+          });
+          html += '</tr>';
+        });
+        matrix.innerHTML = html + '</tbody>';
+        matrixWrap.hidden = false;
+      }
+
+      function showLaneUnderKey(rowIndex, colIndex) {
+        const row = lanes[rowIndex];
+        const det = row.cross[colIndex];
+        if (!det) return;
+        row.selectedCol = colIndex;
+        resetTokenView(row.tokensEl);
+        renderTokenChips(row.tokensEl, det.tokens || []);
+        renderZChart(row.chartEl, det.tokens || [], det.threshold);
+        const keyLabel = colIndex === 2 ? '既定鍵' : LANE_LABELS[colIndex];
+        showResult(row.resultEl, keyLabel + ' で判定: ' + verdictLabel(det.verdict), det, det.verdict === 'watermarked' ? 'success' : '');
+        renderMatrix();
+      }
+
+      matrix.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-row]');
+        if (btn) showLaneUnderKey(Number(btn.dataset.row), Number(btn.dataset.col));
+      });
+
+      async function runComparison() {
+        const prompt = document.getElementById('compare-prompt').value.trim();
+        if (!prompt) return;
+        const seed = Number(document.getElementById('compare-seed').value) || 0;
+        const maxTokens = Math.max(1, Number(document.getElementById('compare-max-tokens').value) || 150);
+        compareButton.disabled = true;
+        matrixWrap.hidden = true;
+        lanes.forEach((lane) => { lane.watermark = laneOverride(lane); lane.selectedCol = lane.index; });
+        try {
+          for (const lane of lanes) {
+            compareStatus.textContent = LANE_LABELS[lane.index] + ' を生成中…';
+            await generateLane(lane, prompt, seed, maxTokens);
+          }
+          compareStatus.textContent = '相互検出を計算中…';
+          const jobs = [];
+          lanes.forEach((row) => lanes.forEach((col) => {
+            if (!row.text) return;
+            jobs.push(detectWith(row.text, detectOverride(col)).then((det) => { row.cross[col.index] = det; }).catch(() => { row.cross[col.index] = null; }));
+          }));
+          await Promise.all(jobs);
+          renderMatrix();
+          compareStatus.textContent = '完了。対角セルが自分の鍵での判定です。';
+        } finally {
+          compareButton.disabled = false;
+        }
+      }
+      compareButton.addEventListener('click', runComparison);
+
+      lanes.forEach((lane) => lane.tamperBtn.addEventListener('click', () => {
+        if (typeof sendToTamper === 'function') sendToTamper({ text: lane.text, watermark: detectOverride(lane), label: LANE_LABELS[lane.index] });
+      }));
+
+      const tamper = { original: '', watermark: undefined, originalDetection: null, seq: 0, timer: null, inFlight: false, pending: false };
+      const tamperText = document.getElementById('tamper-text');
+      const tamperTokens = document.getElementById('tamper-tokens');
+      const tamperChart = document.getElementById('tamper-chart');
+      const tamperFormula = document.getElementById('tamper-formula');
+      const tamperStats = document.getElementById('tamper-stats');
+      const tamperError = document.getElementById('tamper-error');
+
+      function levenshtein(a, b) {
+        if (a.length > 2000 || b.length > 2000) return null;
+        const prev = new Array(b.length + 1);
+        for (let j = 0; j <= b.length; j++) prev[j] = j;
+        for (let i = 1; i <= a.length; i++) {
+          let diag = prev[0]; prev[0] = i;
+          for (let j = 1; j <= b.length; j++) {
+            const tmp = prev[j];
+            prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+            diag = tmp;
+          }
+        }
+        return prev[b.length];
+      }
+
+      function renderTamper(det) {
+        resetTokenView(tamperTokens);
+        renderTokenChips(tamperTokens, det.tokens || []);
+        renderZChart(tamperChart, det.tokens || [], det.threshold);
+        const gamma = tamper.watermark && tamper.watermark.gamma !== undefined ? tamper.watermark.gamma : settings.gamma;
+        renderFormula(tamperFormula, det, gamma);
+        const z0 = tamper.originalDetection ? Number(tamper.originalDetection.z_score).toFixed(3) : '-';
+        document.getElementById('tamper-z0').textContent = z0;
+        document.getElementById('tamper-z1').textContent = Number(det.z_score).toFixed(3);
+        const v0 = tamper.originalDetection ? verdictLabel(tamper.originalDetection.verdict) : '-';
+        document.getElementById('tamper-verdict').textContent = v0 + ' → ' + verdictLabel(det.verdict);
+        const dist = levenshtein(tamper.original, tamperText.value);
+        const lenDiff = Math.abs(tamperText.value.length - tamper.original.length);
+        document.getElementById('tamper-dist').textContent = dist === null ? ('約 ' + lenDiff + '（長文のため文字数差）') : String(dist);
+        tamperStats.hidden = false;
+      }
+
+      async function runTamperDetect() {
+        if (tamper.inFlight) { tamper.seq++; tamper.pending = true; return; }  // 飛行中の応答を無効化しつつ次を投げず、完了後に最新テキストで再実行
+        const text = tamperText.value.trim();
+        if (!text) { tamper.seq++; tamperError.textContent = ''; tamperStats.hidden = true; resetTokenView(tamperTokens); renderZChart(tamperChart, [], settings.z_threshold); tamperFormula.innerHTML = ''; return; }
+        const seq = ++tamper.seq;
+        tamper.inFlight = true;
+        try {
+          const det = await detectWith(text, tamper.watermark);
+          if (seq !== tamper.seq) return;           // 古い応答は捨てる
+          if (!tamper.original) { tamper.original = text; }
+          if (!tamper.originalDetection) tamper.originalDetection = det;
+          tamperError.textContent = '';
+          renderTamper(det);
+        } catch (error) {
+          if (seq !== tamper.seq) return;
+          tamperError.textContent = error.message;   // 前回の表示は残す
+        } finally {
+          tamper.inFlight = false;
+          if (tamper.pending) {
+            tamper.pending = false;
+            runTamperDetect();                       // 飛行中に来た最新テキストで即再実行
+          }
+        }
+      }
+
+      function scheduleTamperDetect() {
+        clearTimeout(tamper.timer);
+        tamper.timer = setTimeout(runTamperDetect, 300);
+      }
+      tamperText.addEventListener('input', scheduleTamperDetect);
+
+      document.getElementById('tamper-reset').addEventListener('click', () => {
+        tamperText.value = tamper.original;
+        runTamperDetect();
+      });
+
+      function sendToTamper(payload) {
+        tamper.original = payload.text || '';
+        tamper.watermark = payload.watermark;
+        tamper.originalDetection = null;
+        tamperText.value = tamper.original;
+        const keyLabel = payload.watermark && payload.watermark.hash_key !== undefined ? '鍵 …' + String(payload.watermark.hash_key).slice(-4) : '既定鍵';
+        document.getElementById('tamper-source').textContent = '持ち込み元: ' + (payload.label || '貼り付け') + '（' + keyLabel + (payload.watermark && payload.watermark.gamma !== undefined ? '、γ=' + payload.watermark.gamma : '') + ' で判定）';
+        activateTab('tamper');
+        runTamperDetect();
+      }
+
+      // 生成タブからの持ち込み
+      let lastGeneration = null;   // 生成ハンドラの done で {text: payload.full_text} を保存し generateTamperButton.hidden = false にする
+      generateTamperButton.addEventListener('click', () => {
+        if (lastGeneration) sendToTamper({ text: lastGeneration.text, watermark: undefined, label: '生成タブ' });
       });
     })();
   </script>

@@ -132,13 +132,18 @@ class DetectionService:
             token_ids = token_ids[1:]
         return token_ids
 
-    def classify(self, text: str, include_tokens: bool = False) -> DetectionResponse:
+    def classify(
+        self,
+        text: str,
+        include_tokens: bool = False,
+        config: WatermarkConfig | None = None,
+    ) -> DetectionResponse:
         if not self.is_ready():
             raise ModelNotReadyError("tokenizer is not ready")
         return _classify_token_ids(
             self._token_ids(text),
             len(self.tokenizer),
-            self.config,
+            config or self.config,
             tokenizer=self.tokenizer,
             include_tokens=include_tokens,
         )
@@ -193,20 +198,24 @@ class GenerationService:
         return GenerationLease(self._capacity)
 
     def begin(
-        self, prompt: str, max_new_tokens: int, seed: int | None
+        self,
+        prompt: str,
+        max_new_tokens: int,
+        seed: int | None,
+        config: WatermarkConfig | None = None,
     ) -> Iterator[GenerationEvent]:
         if not self.health():
             raise ModelNotReadyError("model is not ready")
         lease = self.reserve_slot()
         self._generation.acquire()
         try:
-            yield from self._generate(prompt, max_new_tokens, seed)
+            yield from self._generate(prompt, max_new_tokens, seed, config or self.config)
         finally:
             self._generation.release()
             lease.release()
 
     def _generate(
-        self, prompt: str, max_new_tokens: int, seed: int | None
+        self, prompt: str, max_new_tokens: int, seed: int | None, config: WatermarkConfig
     ) -> Iterator[GenerationEvent]:
         apply_chat_template = getattr(self.tokenizer, "apply_chat_template", None)
         if apply_chat_template is not None:
@@ -230,17 +239,19 @@ class GenerationService:
             try:
                 if seed is not None:
                     torch.manual_seed(seed)
-                result_holder["output"] = self.model.generate(
-                    **inputs,
-                    streamer=streamer,
-                    logits_processor=LogitsProcessorList(
-                        [WatermarkLogitsProcessor(len(self.tokenizer), self.config)]
-                    ),
+                generate_kwargs = dict(
                     max_new_tokens=max_new_tokens,
                     do_sample=True,
                     temperature=0.7,
                     top_p=0.8,
                     top_k=20,
+                )
+                if config.delta > 0:
+                    generate_kwargs["logits_processor"] = LogitsProcessorList(
+                        [WatermarkLogitsProcessor(len(self.tokenizer), config)]
+                    )
+                result_holder["output"] = self.model.generate(
+                    **inputs, streamer=streamer, **generate_kwargs
                 )
             except Exception as exc:
                 result_holder["error"] = exc
@@ -252,7 +263,7 @@ class GenerationService:
 
         special_ids = set(getattr(self.tokenizer, "all_special_ids", []))
         vocab_size = len(self.tokenizer)
-        scorer = IncrementalScorer(vocab_size, self.config)
+        scorer = IncrementalScorer(vocab_size, config)
         pieces = TokenPieceBuilder(self.tokenizer)
         for chunk in streamer:
             live_ids = [i for i in chunk.token_ids if i not in special_ids]
@@ -283,7 +294,7 @@ class GenerationService:
             token_ids = [token_id for token_id in token_ids if token_id not in special_ids]
             full_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
             response = _classify_token_ids(
-                token_ids, vocab_size, self.config,
+                token_ids, vocab_size, config,
                 tokenizer=self.tokenizer, include_tokens=True,
             )
         except Exception:

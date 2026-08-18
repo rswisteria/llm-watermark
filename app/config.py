@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
+from app.schemas import WatermarkOverride
 from watermark import MAX_HASH_KEY, WatermarkConfig
 
 
@@ -47,11 +48,12 @@ class ServiceSettings:
             max_new_tokens=max_new_tokens,
         )
 
-    def watermark_config(self) -> WatermarkConfig:
+    def watermark_config(self, override: WatermarkOverride | None = None) -> WatermarkConfig:
+        override = override or WatermarkOverride()
         return WatermarkConfig(
-            gamma=self.gamma,
-            delta=self.delta,
-            hash_key=self.hash_key,
+            gamma=self.gamma if override.gamma is None else override.gamma,
+            delta=self.delta if override.delta is None else override.delta,
+            hash_key=self.hash_key if override.hash_key is None else override.hash_key,
             z_threshold=self.z_threshold,
         )
 

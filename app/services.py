@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Iterator, Literal
@@ -21,6 +22,8 @@ from watermark import (
     WatermarkConfig,
     WatermarkLogitsProcessor,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelNotReadyError(RuntimeError):
@@ -259,6 +262,9 @@ class GenerationService:
                     steps = [scorer.push(i) for i in live_ids]
                     tokens = [t.model_dump() for t in _steps_to_tokens(steps, pieces.push(live_ids))]
                 except Exception:
+                    logger.exception(
+                        "live watermark scoring failed; continuing without token details"
+                    )
                     tokens = []
             if chunk.text or tokens:
                 yield GenerationEvent("token", {"text": chunk.text, "tokens": tokens})

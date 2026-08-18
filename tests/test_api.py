@@ -1,4 +1,5 @@
 import inspect
+import logging
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
+from app import services as services_module
 from app.config import ServiceSettings
 from app.services import (
     DetectionService,
@@ -293,6 +295,35 @@ def test_generation_stream_skips_special_tokens_in_live_scoring():
     assert 0 not in [tok["id"] for tok in live]
     assert live[-1]["z"] == pytest.approx(done["z_score"])
     assert len(done["tokens"]) == len(live) == 27
+
+
+def test_generation_stream_logs_and_recovers_when_live_scoring_fails(monkeypatch, caplog):
+    class BrokenTokenPieceBuilder(services_module.TokenPieceBuilder):
+        def push(self, token_ids):
+            raise RuntimeError("boom")
+
+    # Rebind the name looked up inside GenerationService._generate only; the
+    # separate TokenPieceBuilder used by the `done` event's token_pieces()
+    # helper (defined in app.token_pieces) is untouched, so that path keeps
+    # working even though live scoring is broken.
+    monkeypatch.setattr(services_module, "TokenPieceBuilder", BrokenTokenPieceBuilder)
+
+    service, _ = make_generation_service()
+    with caplog.at_level(logging.ERROR, logger="app.services"):
+        events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+
+    token_events = [e for e in events if e.kind == "token"]
+    assert token_events
+    assert all(e.payload["tokens"] == [] for e in token_events)
+
+    assert events[-1].kind == "done"
+    done = events[-1].payload["detection"]
+    assert done["tokens"] is not None
+    assert len(done["tokens"]) == done["num_tokens"] + 1
+
+    assert any(
+        "live watermark scoring failed" in record.message for record in caplog.records
+    )
 
 
 def test_generation_service_rejects_third_queued_request():

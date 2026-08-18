@@ -9,12 +9,12 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     LogitsProcessorList,
-    TextIteratorStreamer,
 )
 
 from app.config import ServiceSettings
 from app.schemas import DetectionResponse, TokenDetail
-from app.token_pieces import token_pieces
+from app.streaming import IdRecordingStreamer
+from app.token_pieces import TokenPieceBuilder, token_pieces
 from watermark import (
     DetectionStep,
     IncrementalScorer,
@@ -216,7 +216,7 @@ class GenerationService:
             )
         else:
             inputs = self.tokenizer(prompt, return_tensors="pt")
-        streamer = TextIteratorStreamer(
+        streamer = IdRecordingStreamer(
             self.tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
@@ -246,9 +246,22 @@ class GenerationService:
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
-        for fragment in streamer:
-            if fragment:
-                yield GenerationEvent("token", {"text": fragment})
+
+        special_ids = set(getattr(self.tokenizer, "all_special_ids", []))
+        vocab_size = len(self.tokenizer)
+        scorer = IncrementalScorer(vocab_size, self.config)
+        pieces = TokenPieceBuilder(self.tokenizer)
+        for chunk in streamer:
+            live_ids = [i for i in chunk.token_ids if i not in special_ids]
+            tokens: list[dict] = []
+            if live_ids:
+                try:
+                    steps = [scorer.push(i) for i in live_ids]
+                    tokens = [t.model_dump() for t in _steps_to_tokens(steps, pieces.push(live_ids))]
+                except Exception:
+                    tokens = []
+            if chunk.text or tokens:
+                yield GenerationEvent("token", {"text": chunk.text, "tokens": tokens})
         thread.join()
 
         if "error" in result_holder:
@@ -261,10 +274,12 @@ class GenerationService:
             prompt_ids = inputs["input_ids"]
             prompt_length = int(prompt_ids.shape[-1]) if hasattr(prompt_ids, "shape") else len(prompt_ids[0])
             token_ids = [int(token_id) for token_id in output_ids[prompt_length:]]
-            special_ids = set(getattr(self.tokenizer, "all_special_ids", []))
             token_ids = [token_id for token_id in token_ids if token_id not in special_ids]
             full_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
-            response = _classify_token_ids(token_ids, len(self.tokenizer), self.config)
+            response = _classify_token_ids(
+                token_ids, vocab_size, self.config,
+                tokenizer=self.tokenizer, include_tokens=True,
+            )
         except Exception:
             yield GenerationEvent("error", {"message": "generation failed"})
             return

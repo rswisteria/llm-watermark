@@ -261,6 +261,40 @@ def test_generation_service_with_no_continuation_emits_inconclusive_done():
     assert events[-1].payload["detection"]["num_tokens"] == 0
 
 
+def test_generation_stream_carries_live_token_details_matching_final_detection():
+    service, _ = make_generation_service()
+
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+
+    token_events = [e for e in events if e.kind == "token"]
+    live = [tok for e in token_events for tok in e.payload["tokens"]]
+    done = events[-1].payload["detection"]
+
+    assert all("text" in e.payload for e in token_events)
+    assert [tok["index"] for tok in live] == list(range(25))
+    assert live[0]["green"] is None and live[0]["t"] == 0
+    assert live[-1]["t"] == done["num_tokens"] == 24
+    assert live[-1]["z"] == pytest.approx(done["z_score"])
+    assert done["tokens"] is not None
+    assert [tok["id"] for tok in done["tokens"]] == [tok["id"] for tok in live]
+    assert [tok["z"] for tok in done["tokens"]] == pytest.approx([tok["z"] for tok in live])
+
+
+def test_generation_stream_skips_special_tokens_in_live_scoring():
+    tokenizer = FakeTokenizer()
+    model = FakeModel(tokenizer, continuation_ids=[*range(3, 30), 0])  # 0 は special
+    service = GenerationService(
+        settings=ServiceSettings(hash_key=17), config=WatermarkConfig(hash_key=17),
+        tokenizer=tokenizer, model=model,
+    )
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None))
+    live = [tok for e in events if e.kind == "token" for tok in e.payload["tokens"]]
+    done = events[-1].payload["detection"]
+    assert 0 not in [tok["id"] for tok in live]
+    assert live[-1]["z"] == pytest.approx(done["z_score"])
+    assert len(done["tokens"]) == len(live) == 27
+
+
 def test_generation_service_rejects_third_queued_request():
     service, _ = make_generation_service()
 

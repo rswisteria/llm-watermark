@@ -754,3 +754,58 @@ def test_requests_accept_optional_watermark_override():
     assert request.watermark.hash_key == 5
     assert request.watermark.gamma == 0.5
     assert request.watermark.delta is None
+
+
+def test_generation_uses_override_config_for_processor_and_scoring():
+    service, model = make_generation_service()
+    override = WatermarkConfig(hash_key=99, gamma=0.5, delta=3.0)
+
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None, config=override))
+
+    processor = model.last_generation["logits_processor"][0]
+    assert isinstance(processor, WatermarkLogitsProcessor)
+    assert processor.config == override
+    done = events[-1].payload["detection"]
+    live = [tok for e in events if e.kind == "token" for tok in e.payload["tokens"]]
+    # 上書き鍵で採点した結果と一致する（既定鍵とは一般に異なる）
+    from watermark import WatermarkDetector
+    ids = [tok["id"] for tok in done["tokens"]]
+    expected = WatermarkDetector(len(service.tokenizer), override).detect_token_ids(ids)
+    assert done["z_score"] == pytest.approx(expected.z_score)
+    assert live[-1]["z"] == pytest.approx(expected.z_score)
+
+
+def test_generation_without_override_uses_service_config():
+    service, model = make_generation_service()
+    list(service.begin("prompt", max_new_tokens=12, seed=None))
+    assert model.last_generation["logits_processor"][0].config == service.config
+
+
+def test_generation_with_zero_delta_skips_logits_processor():
+    service, model = make_generation_service()
+    plain = WatermarkConfig(hash_key=17, delta=0.0)
+
+    events = list(service.begin("prompt", max_new_tokens=12, seed=None, config=plain))
+
+    assert "logits_processor" not in model.last_generation
+    assert events[-1].kind == "done"
+    assert events[-1].payload["detection"]["threshold"] == 4.0
+
+
+def test_detection_service_uses_override_config():
+    from watermark import GreenListGenerator
+
+    base = WatermarkConfig(hash_key=17)
+    other = WatermarkConfig(hash_key=23)
+    generator = GreenListGenerator(16, base)
+    ids = [3]
+    for _ in range(40):
+        ids.append(int(generator.green_list(ids[-1])[0]))
+    service = DetectionService(tokenizer=PieceTokenizer(ids), config=base)
+
+    with_base = service.classify("x")
+    with_other = service.classify("x", config=other)
+
+    assert with_base.verdict == "watermarked"
+    assert with_other.green_count < with_base.green_count
+    assert with_other.z_score < with_base.z_score
